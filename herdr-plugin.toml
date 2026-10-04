@@ -1,0 +1,145 @@
+id = "minhtran3124.sidekick"
+name = "Sidekick"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "Side panels for coding agents: worktrees, changed files with diffs, and Claude Code subagents"
+platforms = ["linux", "macos"]
+
+# Downloads the prebuilt binary for this OS/arch from the GitHub release, else builds with cargo.
+# `herdr plugin link` skips [[build]]: run `sh scripts/build.sh` yourself for a linked checkout.
+[[build]]
+command = ["sh", "scripts/build.sh"]
+
+[[panes]]
+id = "board"
+title = "Worktrees"
+placement = "split"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" board"]
+
+[[panes]]
+id = "changes"
+title = "Changes"
+placement = "split"
+# Pane cwd is the repo being watched, not the plugin root.
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" changes"]
+
+# Opened by the changes list on click; the file comes in through CHANGES_FILE.
+[[panes]]
+id = "diff"
+title = "Diff"
+placement = "overlay"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" diff"]
+
+[[panes]]
+id = "agents"
+title = "Agents"
+placement = "split"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" agents"]
+
+# Opened by the agents list (split pane or overlay peek); the transcript comes in through AGENT_FILE.
+[[panes]]
+id = "view"
+title = "Agent"
+placement = "overlay"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" view"]
+
+# File viewer: type a repo-relative path (fuzzy) or arrive with OPEN_PATH (path[:line]).
+[[panes]]
+id = "open"
+title = "Open"
+placement = "overlay"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" open"]
+
+[[actions]]
+id = "open-file"
+title = "Sidekick: open file"
+description = "Type a path in the repo (fuzzy, path:line jumps) and view the file."
+contexts = ["workspace", "pane"]
+command = ["bash", "sidekick.sh", "open"]
+
+# Ctrl+click on a file path or file:// link (e.g. src/main.rs:42 printed by an agent).
+[[actions]]
+id = "open-link"
+title = "Sidekick: open clicked file"
+description = "Open the Ctrl+clicked file path in the file viewer."
+contexts = ["pane"]
+command = ["bash", "sidekick.sh", "open"]
+
+[[link_handlers]]
+id = "file-path"
+title = "Open in Sidekick"
+pattern = "^(file://)?[A-Za-z0-9_./@+-]*[A-Za-z0-9_-]\\.[A-Za-z0-9]+(:[0-9]+){0,2}$"
+action = "open-link"
+
+[[actions]]
+id = "toggle-worktrees"
+title = "Sidekick: toggle worktrees"
+description = "Hide the worktree board everywhere, or show it in the active tab and re-enable auto-open."
+contexts = ["workspace", "pane"]
+command = ["bash", "sidekick.sh", "toggle", "worktrees"]
+
+[[actions]]
+id = "toggle-changes"
+title = "Sidekick: toggle changes"
+description = "Hide the changed-files panel everywhere, or show it in the active tab and re-enable auto-open."
+contexts = ["workspace", "pane"]
+command = ["bash", "sidekick.sh", "toggle", "changes"]
+
+[[actions]]
+id = "toggle-agents"
+title = "Sidekick: toggle agents"
+description = "Hide the subagents panel everywhere, or show it in the active tab and re-enable auto-open."
+contexts = ["workspace", "pane"]
+command = ["bash", "sidekick.sh", "toggle", "agents"]
+
+[[actions]]
+id = "statusbar-install"
+title = "Sidekick: add tab-bar summary"
+description = "Add a managed block to herdr's config.toml: a worktree summary in the tab bar and a PR row in the sidebar."
+contexts = ["workspace"]
+command = ["bash", "scripts/statusbar.sh", "install"]
+
+[[actions]]
+id = "statusbar-remove"
+title = "Sidekick: remove tab-bar summary"
+description = "Remove the managed config.toml block and the sidebar tokens Sidekick published."
+contexts = ["workspace"]
+command = ["bash", "scripts/statusbar.sh", "remove"]
+
+# Auto-open each panel where it applies, unless hidden with its q key or toggle.
+[[startup]]
+command = ["bash", "sidekick.sh", "ensure"]
+
+[[events]]
+on = "workspace.focused"
+command = ["bash", "sidekick.sh", "ensure"]
+
+[[events]]
+on = "tab.focused"
+command = ["bash", "sidekick.sh", "ensure"]
+
+[[events]]
+on = "tab.created"
+command = ["bash", "sidekick.sh", "ensure"]
+
+[[events]]
+on = "worktree.created"
+command = ["bash", "sidekick.sh", "ensure"]
+
+[[events]]
+on = "worktree.opened"
+command = ["bash", "sidekick.sh", "ensure"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "sidekick.sh", "ensure"]
+
+# Open agents panels also run the all-workspace notification scan; these hooks cover the time
+# when none is open. pane.agent_status_changed is rare on herdr 0.9.1, focus changes are not.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" notify"]
+
+[[events]]
+on = "workspace.focused"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" notify"]
