@@ -44,16 +44,91 @@ It adds a managed block to `~/.config/herdr/config.toml` and backs the file up f
 
 ## Keys
 
-| Panel | Keys |
-|---|---|
-| worktrees | `↵` open · `⇥` info · `n` new · `d` delete · `c` start claude · `o` open PR · `y` copy path · `/` find · `q` hide |
-| changes | `↵` diff · `f` open file · `r` refresh · `q` hide; in the diff `]` / `[` next/prev file, `q` close |
-| open file | type to filter · `↑`/`↓` select · `↵` open · `^U` clear · `esc` close; in a file `:` go to line · `/` find · `n`/`N` next · `esc` back · `q` close |
-| agents | `↵` open pane · `v` peek (overlay) · `c` close agent panes · `o` auto-open on/off · `a` hide finished · `p` show agents from before a resume · `q` hide |
-| agent pane | `j`/`k` scroll · click a tool call to expand · `o` expand all · `t` thinking · `G` follow · `q` close |
+Every panel moves with `j`/`k` or `↑`/`↓`, and the mouse wheel scrolls. Viewers (diff, file,
+agent pane) also take `d`/`u` or PgDn/PgUp to page and `g`/`G` for top/bottom; `h`/`l` scroll
+the diff and file viewers sideways.
 
-`q` on a panel hides it in every tab and stops it auto-opening. Bring it back with the action
-**Sidekick: toggle worktrees / changes / agents**.
+### ⎇ Worktrees
+
+| Key | Action |
+|---|---|
+| `↵` | Open the worktree |
+| `⇥` / `space` | Show / hide details |
+| `n` | New worktree (type a branch, `↵`) |
+| `d` | Delete worktree (confirm with `y`) |
+| `c` | Start Claude in it |
+| `o` | Open its PR |
+| `y` | Copy its path |
+| `/` | Filter (`esc` clears) |
+| `r` | Refresh |
+| `q` | Hide panel |
+
+### ± Changes
+
+| Key | Action |
+|---|---|
+| `↵` / `l` | Open diff, or fold / unfold a folder |
+| `h` | Fold folder |
+| `f` | Open file picker |
+| `r` | Refresh |
+| `q` | Hide panel |
+
+**In the diff**
+
+| Key | Action |
+|---|---|
+| `]` / `[` | Next / previous file |
+| `n` / `p` | Next / previous hunk |
+| `e` | Show all lines / only changes |
+| `q` / `esc` | Close |
+
+### Open file
+
+**Picker**
+
+| Key | Action |
+|---|---|
+| *type* | Fuzzy filter; `path:line` jumps to the line |
+| `↑` / `↓`, `⇥`, `^N` / `^P` | Select |
+| `↵` | Open |
+| `^U` | Clear |
+| `esc` | Close |
+
+**Viewer**
+
+| Key | Action |
+|---|---|
+| `:` | Go to line |
+| `/` | Find |
+| `n` / `N` | Next / previous match |
+| `esc` | Back to picker |
+| `q` | Close |
+
+### ◈ Agents
+
+| Key | Action |
+|---|---|
+| `↵` | Open as a pane |
+| `v` / `space` | Peek (overlay) |
+| `c` | Close all agent panes |
+| `o` | Auto-open on / off |
+| `a` | Hide / show finished |
+| `p` | Show agents from before a resume |
+| `r` | Refresh |
+| `q` | Hide panel |
+
+**Agent pane**
+
+| Key | Action |
+|---|---|
+| *click* | Expand a tool call |
+| `o` | Expand all tool calls |
+| `t` | Show / hide thinking |
+| `G` | Follow new output |
+| `q` / `esc` | Close |
+
+> `q` on a panel hides it in every tab and stops it auto-opening. Bring it back with the action
+> **Sidekick: toggle worktrees / changes / agents**.
 
 ## Settings
 
