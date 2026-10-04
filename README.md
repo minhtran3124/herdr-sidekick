@@ -30,7 +30,7 @@ Panels open by themselves where they apply and follow the pane you work in.
 ## Install
 
 ```sh
-herdr plugin install <owner>/herdr-sidekick
+herdr plugin install minhtran3124/herdr-sidekick
 ```
 
 The install downloads a prebuilt binary for macOS (Apple Silicon, Intel) or Linux (x86_64,
@@ -154,6 +154,5 @@ Check a panel without herdr: `sidekick changes --snapshot 44x20`,
 `AGENTS_SESSION=<session id> sidekick agents --snapshot 44x30`,
 `HERDR_WORKSPACE_ID=<id> sidekick board --snapshot 38x40`.
 
-Release: bump `version` in `herdr-plugin.toml` and `Cargo.toml`, set `REPO` in
-`scripts/build.sh`, then push a `v<version>` tag. `.github/workflows/release.yml` builds and
-attaches the four binaries that the install downloads.
+Release: bump `version` in `herdr-plugin.toml` and `Cargo.toml`, then push a `v<version>` tag.
+`.github/workflows/release.yml` builds and attaches the four binaries that the install downloads.

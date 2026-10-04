@@ -3,9 +3,8 @@
 # release matching the manifest version, else build from source with cargo.
 set -eu
 cd "$(dirname "$0")/.."
-# owner/name of the GitHub repo that hosts the releases. Empty until the repo is published;
-# SIDEKICK_REPO overrides it (e.g. for a fork).
-REPO=${SIDEKICK_REPO:-}
+# owner/name of the GitHub repo that hosts the releases; SIDEKICK_REPO overrides it (e.g. for a fork).
+REPO=${SIDEKICK_REPO:-minhtran3124/herdr-sidekick}
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin.toml | head -n1)
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) target=aarch64-apple-darwin ;;
