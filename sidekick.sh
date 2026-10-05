@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Places sidekick's side panels; each panel follows the focused pane by itself.
-# Usage: sidekick.sh ensure | toggle <panel> | off <panel> | open [PATH[:LINE]]
+# Usage: sidekick.sh ensure | toggle <panel> | off <panel> | restart | open [PATH[:LINE]]
 #        panel = worktrees | changes | agents
 #   ensure  (startup / focus / agent-status hooks) open each missing panel in the active tab when it
 #           applies, unless hidden: worktrees when the repo has >= WORKTREES_MIN checkouts, changes in
 #           a git checkout, agents once a Claude pane in the tab has spawned a subagent
 #   toggle  hide that panel everywhere when the active tab shows it, else re-enable and open it here
-#   off     hide that panel everywhere and stop auto-opening it (the panel's `q` key)
+#   off     hide that panel everywhere and stop auto-opening it (the panel's `Q` key; `q` closes it in its tab only)
+#   restart close and reopen every open panel in every tab, so a rebuilt binary takes effect
 #   open    file viewer overlay in the focused pane's directory; PATH defaults to the Ctrl+clicked
 #           link ($HERDR_PLUGIN_CLICKED_URL), and a click on something that is not a file is ignored
 # Layout: [ work panes ][ ± changes / ◈ agents ][ ⎇ worktrees ]
@@ -28,6 +29,7 @@ label_of() { case $1 in worktrees) echo "$BOARD" ;; changes) echo "$CHANGES" ;; 
 entry_of() { case $1 in worktrees) echo board ;; *) echo "$1" ;; esac; }
 width_of() { case $1 in worktrees) echo "${WORKTREES_WIDTH:-38}" ;; changes) echo "${CHANGES_WIDTH:-44}" ;; agents) echo "${AGENTS_WIDTH:-44}" ;; esac; }
 off_flag() { echo "$STATE/disabled-$1"; }
+closed_flag() { echo "$STATE/closed-$1-$2"; } # panel tab: `q` closed it in that tab only
 
 # One run holds the lock, so herdr's state only changes when this script changes it: read
 # `pane list` / `workspace list` once and again only after opening a pane (refresh). Helpers
@@ -191,12 +193,20 @@ applies() { # panel ws tab cwd
 
 # Panels that should open in the active tab: missing there, not hidden, and applying.
 ensure() {
-  local ws tab cwd p want=""
+  local ws tab cwd p f t want=""
   read -r ws tab < <(active) || return 0
   [ -n "$tab" ] || return 0
   cwd=$(tab_cwd "$tab" "$ws")
+  # `q` flags of tabs that no longer exist.
+  for f in "$STATE"/closed-*; do
+    [ -e "$f" ] || continue
+    t=${f##*/closed-}
+    t=${t#*-}
+    jq -e --arg t "$t" 'any(.result.panes[]; .tab_id == $t)' <<<"$PANES" >/dev/null || rm -f "$f"
+  done
   for p in worktrees changes agents; do
     [ -f "$(off_flag "$p")" ] && continue
+    [ -f "$(closed_flag "$p" "$tab")" ] && continue
     [ -z "$(in_tab "$tab" "$(label_of "$p")")" ] || continue
     # One panel failing to apply (herdr busy) must not keep the others from opening.
     applies "$p" "$ws" "$tab" "$cwd" && want="$want $p"
@@ -225,31 +235,85 @@ close_in_tab() { # tab panel
   for id in $(in_tab "$1" "$(label_of "$2")"); do close_pane "$id"; done
 }
 
-# Closing a pane hands its columns to a neighbour, so after a panel closes the board or the
-# middle column can be left wider than configured. Narrow each back by growing the pane on its
-# left. Resize amounts are fractions of the parent right-split holding the panel.
+# Closing a pane hands its columns to a neighbour, and herdr scales a split's children by ratio,
+# so panels drift off their configured width. Set each right-split whose right side is only
+# panels back to the sum of those panel columns, outer split first: resizing an outer split
+# rescales everything inside it. `pane resize --direction D` grows the pane across its edge on
+# side D, adding --amount to that split's ratio: grow the left side right to narrow the panels,
+# grow the panels left to widen them.
 fit() { # tab
-  local anchor layout label panel id w parent left want amount
+  local wants anchor step pane dir amount
   # Most focus events land in tabs with nothing to fit: skip the layout call there.
-  [ -n "$(in_tab "$1" "$BOARD")$(in_tab "$1" "$CHANGES")$(in_tab "$1" "$AGENTS")" ] || return 0
+  wants=$(for p in worktrees changes agents; do
+    for id in $(in_tab "$1" "$(label_of "$p")"); do echo "$id $(width_of "$p")"; done
+  done | jq -Rn '[inputs | split(" ") | {(.[0]): (.[1] | tonumber)}] | add // {}')
+  [ "$wants" != "{}" ] || return 0
   anchor=$(work_pane "$1")
   [ -n "$anchor" ] || return 0
-  layout=$("$H" pane layout --pane "$anchor") || return 0
-  for panel in worktrees changes agents; do
-    label=$(label_of "$panel")
-    id=$(in_tab "$1" "$label" | head -n1)
-    [ -n "$id" ] || continue
-    want=$(width_of "$panel")
-    read -r w parent left < <(jq -r --arg id "$id" '.result.layout as $L
-      | ($L.panes[] | select(.pane_id == $id) | .rect) as $r
-      | ([$L.splits[] | select(.direction == "right" and .rect.x <= $r.x and .rect.x + .rect.width >= $r.x + $r.width
-          and .rect.y <= $r.y and .rect.y + .rect.height >= $r.y + $r.height) | .rect.width] | min) as $p
-      | ([$L.panes[] | select(.rect.x + .rect.width == $r.x and .rect.y <= $r.y and .rect.y + .rect.height > $r.y) | .pane_id][0] // "-") as $left
-      | "\($r.width) \($p) \($left)"' <<<"$layout") || continue
-    [ "$left" != "-" ] && [ "$parent" != null ] && ((w > want + 1)) || continue
-    amount=$(awk -v w="$w" -v t="$want" -v p="$parent" 'BEGIN { printf "%.4f", (w - t) / p }')
-    "$H" pane resize --pane "$left" --direction right --amount "$amount" >/dev/null 2>&1 || true
-    layout=$("$H" pane layout --pane "$anchor") || return 0
+  for step in 1 2 3 4; do
+    read -r pane dir amount < <("$H" pane layout --pane "$anchor" | jq -r --argjson want "$wants" '
+      .result.layout as $L
+      | def inside($s): .rect.x >= $s.rect.x and .rect.x + .rect.width <= $s.rect.x + $s.rect.width
+          and .rect.y >= $s.rect.y and .rect.y + .rect.height <= $s.rect.y + $s.rect.height;
+      [$L.splits[] | select(.direction == "right")] | sort_by(-.rect.width)[] as $s
+      | [$L.panes[] | select(inside($s))] as $in
+      | ($s.rect.x + $s.rect.width * $s.ratio) as $b
+      | ([$in[] | select(.rect.x >= $b - 1) | .rect.x] | min) as $rx
+      | [$in[] | select(.rect.x >= $rx)] as $right
+      | select(all($right[]; $want[.pane_id] != null))
+      | ([$right | group_by(.rect.x)[] | map($want[.pane_id]) | max] | add) as $goal
+      | ($s.rect.x + $s.rect.width - $rx) as $cur
+      | ([$in[] | select(.rect.x + .rect.width == $rx) | .pane_id][0]) as $left
+      | select($left != null and $goal < $s.rect.width - 10 and ($cur - $goal | fabs) > 1)
+      | if $cur > $goal then "\($left) right" else "\($right[0].pane_id) left" end
+        + " \(($cur - $goal | fabs) / $s.rect.width)"' | head -n1) || return 0
+    [ -n "${pane:-}" ] || return 0
+    "$H" pane resize --pane "$pane" --direction "$dir" --amount "$amount" >/dev/null 2>&1 || return 0
+    pane=""
+  done
+}
+
+# A running panel keeps the binary it started with: reopen each tab's panels in place. Panels
+# built since 2026-10-05 re-exec themselves on a rebuild; this is for older ones. Agent panes
+# (◇) park in a hidden tab meanwhile, else the panels would be cut off the work pane and land
+# between it and the agents; they come back right of the work pane and the agents panel
+# re-grids them.
+restart() {
+  local tab ws cwd p present agents park id work first
+  for tab in $(jq -r "[.result.panes[] | select($(is_side) and (.label | startswith(\"◇ \") | not)) | .tab_id] | unique[]" <<<"$PANES"); do
+    present=""
+    for p in worktrees changes agents; do
+      [ -n "$(in_tab "$tab" "$(label_of "$p")")" ] && present="$present $p"
+    done
+    ws=$(jq -r --arg t "$tab" '[.result.panes[] | select(.tab_id == $t)][0].workspace_id' <<<"$PANES")
+    cwd=$(tab_cwd "$tab" "$ws")
+    agents=$(jq -r --arg t "$tab" '.result.panes[] | select(.tab_id == $t and ((.label // "") | startswith("◇ "))) | .pane_id' <<<"$PANES")
+    park=""
+    for id in $agents; do
+      if [ -z "$park" ]; then
+        park=$("$H" pane move "$id" --new-tab --label sidekick-park --no-focus | jq -r '.result.move_result.pane.tab_id // empty')
+      else
+        "$H" pane move "$id" --tab "$park" --split down --no-focus >/dev/null
+      fi
+    done
+    refresh
+    for p in $present; do close_in_tab "$tab" "$p"; done
+    refresh
+    place_all "$tab" "${cwd:-$HOME}" $present
+    refresh
+    fit "$tab" || true
+    if [ -n "$park" ]; then
+      work=$(work_pane "$tab") first=""
+      for id in $agents; do
+        if [ -z "$first" ]; then
+          "$H" pane move "$id" --tab "$tab" --target-pane "$work" --split right --ratio 0.5 --no-focus >/dev/null
+          first=$id
+        else
+          "$H" pane move "$id" --tab "$tab" --target-pane "$first" --split down --no-focus >/dev/null
+        fi
+      done
+      refresh
+    fi
   done
 }
 
@@ -300,6 +364,7 @@ fi
 refresh
 case $cmd in
   ensure) ensure || true ;;
+  restart) restart ;;
   toggle | off)
     label_of "$panel" >/dev/null || { echo "usage: sidekick.sh $cmd worktrees|changes|agents" >&2; exit 2; }
     read -r _ tab < <(active) || true
@@ -307,11 +372,11 @@ case $cmd in
       touch "$(off_flag "$panel")"
       close_all "$panel"
     else
-      rm -f "$(off_flag "$panel")"
+      rm -f "$(off_flag "$panel")" "$(closed_flag "$panel" "${tab:-}")"
       force_open "$panel"
     fi
     refresh
     [ -n "${tab:-}" ] && { fit "$tab" || true; }
     ;;
-  *) echo "usage: sidekick.sh ensure | toggle <panel> | off <panel> | open [PATH[:LINE]]" >&2; exit 2 ;;
+  *) echo "usage: sidekick.sh ensure | toggle <panel> | off <panel> | restart | open [PATH[:LINE]]" >&2; exit 2 ;;
 esac

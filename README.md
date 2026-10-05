@@ -5,13 +5,17 @@ Side panels for [herdr](https://herdr.dev) when you run coding agents in paralle
 ![Sidekick in herdr: a Claude pane, then changed files over its subagents, then the worktree board](docs/screenshot.png)
 
 - **⎇ worktrees**: every git worktree of the repo as a card, with its agents, changed-file count,
-  ahead/behind and PR + CI status. Opens when the repo has 2+ worktrees.
+  ahead/behind and PR + CI status. Opens when the repo has 2+ worktrees. The selected card has
+  click buttons (open, start claude, PR, hide, delete); `x` hides a worktree you do not need to
+  see, and `?` explains every icon.
 - **± changes**: files changed vs HEAD in the checkout of the pane you are focused on, with +/-
   counts. Click a file for a full-file diff.
 - **◈ agents**: the Claude Code subagents of the focused Claude pane, split into NEEDS YOU
-  (approval, reported BLOCKED, failed), RUNNING and FINISHED. Click one to open its live
-  transcript as a pane next to your Claude pane (up to 4, as a 2×2 grid). New subagents open on
-  their own. herdr notifies you when one needs you, in any workspace.
+  (approval, reported BLOCKED, failed), RUNNING and FINISHED. Each running subagent gets its live
+  transcript as a pane next to your Claude pane, opened on its own; the panes are re-tiled as a
+  grid that fits their count (6 → 3×2, 12 → 3×4) and close 3s after their agent finishes.
+  FINISHED shows the 3 newest until you expand it; click a section header to fold it. herdr
+  notifies you when an agent needs you, in any workspace.
 - **Open file**: type a path in the repo, fuzzy like Ctrl+P (`aiapi` finds
   `apps/api/app/routers/ai/api.py`), and view it with syntax highlighting. `path:line` jumps to
   the line. Open it with `f` in the changes panel, the action **Sidekick: open file**, or
@@ -47,13 +51,19 @@ the diff and file viewers sideways.
 | `↵` | Open the worktree |
 | `⇥` / `space` | Show / hide details |
 | `n` | New worktree (type a branch, `↵`) |
-| `d` | Delete worktree (confirm with `y`) |
+| `d` | Delete worktree (see below) |
+| `x` | Hide / unhide worktree |
+| `H` | Show hidden worktrees |
 | `c` | Start Claude in it |
 | `o` | Open its PR |
 | `y` | Copy its path |
 | `/` | Filter (`esc` clears) |
+| `?` | Icon legend |
 | `r` | Refresh |
-| `q` | Hide panel |
+| `q` | Close panel in this tab |
+| `Q` | Hide panel everywhere |
+
+The selected card also has click buttons: open, start Claude, PR, hide, delete.
 
 ### ± Changes
 
@@ -63,7 +73,8 @@ the diff and file viewers sideways.
 | `h` | Fold folder |
 | `f` | Open file picker |
 | `r` | Refresh |
-| `q` | Hide panel |
+| `q` | Close panel in this tab |
+| `Q` | Hide panel everywhere |
 
 **In the diff**
 
@@ -104,10 +115,13 @@ the diff and file viewers sideways.
 | `v` / `space` | Peek (overlay) |
 | `c` | Close all agent panes |
 | `o` | Auto-open on / off |
-| `a` | Hide / show finished |
+| `a` | Fold / unfold finished |
+| *click header* | Fold / unfold that section |
+| *click* `+N more` | Show every finished agent |
 | `p` | Show agents from before a resume |
 | `r` | Refresh |
-| `q` | Hide panel |
+| `q` | Close panel in this tab |
+| `Q` | Hide panel everywhere |
 
 **Agent pane**
 
@@ -119,18 +133,36 @@ the diff and file viewers sideways.
 | `G` | Follow new output |
 | `q` / `esc` | Close |
 
-> `q` on a panel hides it in every tab and stops it auto-opening. Bring it back with the action
-> **Sidekick: toggle worktrees / changes / agents**.
+`q` on a panel closes it in that tab only; it stays closed there until you toggle it back.
+`Q` hides it in every tab and stops it auto-opening. Either way, bring it back with the action
+**Sidekick: toggle worktrees / changes / agents**. Toggling a panel that is open hides it
+everywhere, like `Q`.
+
+Deleting a worktree (`d` or the card's delete button) asks first:
+
+| Worktree | Choices |
+|---|---|
+| clean | `y` remove the worktree · `b` also delete its branch · `n` cancel |
+| uncommitted files | the prompt names how many will be lost; only `f` removes it (`--force`) |
+| folder already gone | runs `git worktree prune` |
+
+The branch is deleted with `git branch -d`, which keeps a branch git does not see as merged (a
+squash-merged PR's branch, for one) and says so. Hidden worktrees (`x`) stay hidden across
+restarts; the header shows how many.
 
 ## Settings
 
 Copy `config.env.example` to `$(herdr plugin config-dir minhtran3124.sidekick)/config.env`.
-Widths, the worktree threshold, the `gh` path and the Claude config dir can be changed there.
+Widths, the worktree threshold, plain icons, the `gh` path and the Claude config dir can be
+changed there.
 
 ## Notes
 
 - Agent panes are read-only. A subagent runs inside its parent Claude process, so there is no
   terminal to type into; message it from the parent instead.
+- Agent panes are re-tiled with `herdr pane move`, so their transcripts keep running. A grid cell
+  never goes below 30×8: past that, the pane of the agent that finished longest ago makes room,
+  and an agent with no room stays in the list without a pane.
 - The agents panel reads Claude Code's transcripts under `~/.claude/projects/`. Nothing is sent
   anywhere.
 
@@ -141,6 +173,10 @@ cargo build --release
 herdr plugin link "$PWD"      # link skips [[build]]; target/release/sidekick is used directly
 cargo test --release
 ```
+
+Open panels notice a rebuilt binary within a second and restart themselves in place, layout
+untouched. Panels started from a binary older than that feature need the action
+**Sidekick: restart panels** once. Edits to `herdr-plugin.toml` need `herdr plugin link` again.
 
 Check a panel without herdr: `sidekick changes --snapshot 44x20`,
 `AGENTS_SESSION=<session id> sidekick agents --snapshot 44x30`,

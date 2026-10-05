@@ -6,6 +6,7 @@
 //! Outside herdr, set AGENTS_SESSION=<session id> to pick the session for the list.
 
 mod data;
+mod grid;
 mod list;
 mod notify;
 mod view;
