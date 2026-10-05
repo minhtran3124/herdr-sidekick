@@ -1,4 +1,4 @@
-# Push a tag matching the manifest version (v0.1.0) to publish binaries that scripts/build.sh
+# Push a tag matching the manifest version (v0.1.1) to publish binaries that scripts/build.sh
 # downloads at install time. Linux builds are static (musl), so one binary runs on any distro.
 name: release
 on:
