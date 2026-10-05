@@ -188,6 +188,10 @@ impl List {
         match e {
             Event::Key(k) if k.kind == KeyEventKind::Press => match k.code {
                 KeyCode::Char('q') => {
+                    crate::tui::close_here("changes");
+                    return false;
+                }
+                KeyCode::Char('Q') => {
                     hide_everywhere();
                     return false;
                 }
@@ -287,7 +291,7 @@ impl List {
             self.hits.push((y, i));
         }
 
-        let help = " ↵ diff  f open file  r refresh  q hide";
+        let help = " ↵ diff  f file  r refresh  q hide  Q all";
         buf.set_line(0, area.height.saturating_sub(1), &Line::from(help.dark_gray()), area.width);
     }
 

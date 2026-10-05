@@ -93,6 +93,13 @@ contexts = ["workspace", "pane"]
 command = ["bash", "sidekick.sh", "toggle", "agents"]
 
 [[actions]]
+id = "restart-panels"
+title = "Sidekick: restart panels"
+description = "Close and reopen every open panel in every tab. Only needed for panels started before they reloaded themselves on a rebuild."
+contexts = ["workspace", "pane"]
+command = ["bash", "sidekick.sh", "restart"]
+
+[[actions]]
 id = "statusbar-install"
 title = "Sidekick: add tab-bar summary"
 description = "Add a managed block to herdr's config.toml: a worktree summary in the tab bar and a PR row in the sidebar."

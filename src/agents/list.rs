@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
 use super::data::{self, fmt_dur, Agent, Scanner, Section, Status};
+use super::grid;
 use crate::tui::{spread, state_file, truncate, SIDE_LABELS};
 
 const SEL_BG: Color = Color::Rgb(44, 47, 58);
@@ -21,16 +22,30 @@ const FOCUS_EVERY: Duration = Duration::from_secs(1);
 /// Transcripts are rescanned on file events; this is the fallback for what no event announces.
 const SAFETY_SCAN: Duration = Duration::from_secs(30);
 
-/// Agent panes per tab: a 2×2 grid beside the main pane stays readable (~66×30).
-const MAX_PANES: usize = 4;
 const FLASH: Duration = Duration::from_secs(4);
 const AUTO_GAP: Duration = Duration::from_millis(2500);
 /// Only agents started this recently auto-open, so a panel (re)start does not reopen history.
 const AUTO_WINDOW_MS: i64 = 10 * 60 * 1000;
+/// An agent pane closes itself 3s after its agent finishes (view.rs); the grid waits this long
+/// for that close instead of moving panes while one of them is closing.
+const CLOSE_GRACE_MS: i64 = 6_000;
+/// FINISHED shows this many newest units (agent + children, or a workflow run) until expanded.
+const FEW_DONE: usize = 3;
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// How much of a section shows. Click its header to shut / reopen it.
+#[derive(Clone, Copy, PartialEq)]
+enum Fold {
+    All,
+    /// FINISHED only: the FEW_DONE newest units, then a `+N more` row.
+    Few,
+    Shut,
+}
+
 enum Row {
-    Section { sec: Section, n: usize },
+    Section { sec: Section, n: usize, fold: Fold },
+    /// Under a FINISHED section: `+n more` (n hidden agents) or, when expanded, `show less` (n = 0).
+    More { sec: Section, n: usize },
     Group { run: String, name: String },
     Agent { idx: usize, depth: usize },
 }
@@ -61,9 +76,11 @@ pub struct List {
     /// Open a pane for each newly started agent (`o` toggles, remembered in the state dir).
     auto: bool,
     auto_done: HashSet<String>,
+    /// Agent pane labels the grid was last laid out for; a different open set re-grids.
+    gridded: HashSet<String>,
     opened_at: Option<std::time::Instant>,
     loaded: bool,
-    hide_done: bool,
+    folds: HashMap<Section, Fold>,
     rows: Vec<Row>,
     /// Selection is kept by agent id / run id so it survives refreshes that reorder rows.
     sel: Option<String>,
@@ -91,9 +108,10 @@ impl List {
             flash: None,
             auto: !state_file("auto-off").is_some_and(|p| p.exists()),
             auto_done: HashSet::new(),
+            gridded: HashSet::new(),
             opened_at: None,
             loaded: false,
-            hide_done: false,
+            folds: HashMap::new(),
             rows: Vec::new(),
             sel: None,
             top: 0,
@@ -132,6 +150,26 @@ impl List {
         self.open = snap.open;
         self.rebuild();
         self.auto_open();
+        let settled = self.opened_at.is_none_or(|t| t.elapsed() >= AUTO_GAP) && !self.closing_soon(data::now_ms());
+        if settled && self.open != self.gridded && in_herdr() {
+            self.regrid();
+        }
+    }
+
+    /// An open pane whose agent just finished: it is about to close itself, and a pane closing
+    /// mid-regrid hands its space to the wrong neighbour (the main pane shrank 107 → 90).
+    fn closing_soon(&self, now: i64) -> bool {
+        self.all.iter().any(|a| {
+            a.status.section() == Section::Finished && now - a.last_ms < CLOSE_GRACE_MS && self.open.contains(&a.pane_label())
+        })
+    }
+
+    /// Lays the agent panes out as the grid that fits their count (grid.rs), oldest top-left.
+    /// Remembers the panes it actually laid out: a pane that has not labelled itself yet (its
+    /// process is still starting) is missed now and picked up by the next scan.
+    fn regrid(&mut self) {
+        let order: HashMap<String, i64> = self.all.iter().map(|a| (a.pane_label(), a.start_ms)).collect();
+        self.gridded = regrid_panes(&order);
     }
 
     /// Subagents from earlier runs of a resumed session, hidden unless `p` shows them.
@@ -185,26 +223,55 @@ impl List {
         units.sort_by(|x, y| x.0.cmp(&y.0).then(y.1.cmp(&x.1)));
 
         self.rows.clear();
-        let mut current = None;
-        for (sec, _, rows) in units {
-            if self.hide_done && sec == Section::Finished {
-                continue;
+        // Units are sorted by section: take one section's run off the front at a time.
+        while let Some(&(sec, _, _)) = units.first() {
+            let total = units.iter().take_while(|u| u.0 == sec).count();
+            let fold = self.fold(sec);
+            let n = a.iter().filter(|x| x.status.section() == sec).count();
+            self.rows.push(Row::Section { sec, n, fold });
+            let shown = match fold {
+                Fold::Shut => 0,
+                Fold::Few => total.min(FEW_DONE),
+                Fold::All => total,
+            };
+            let mut hidden = 0;
+            for (k, (_, _, rows)) in units.drain(..total).enumerate() {
+                if k < shown {
+                    self.rows.extend(rows);
+                } else {
+                    hidden += rows.iter().filter(|r| matches!(r, Row::Agent { .. })).count();
+                }
             }
-            if current != Some(sec) {
-                current = Some(sec);
-                let n = a.iter().filter(|x| x.status.section() == sec).count();
-                self.rows.push(Row::Section { sec, n });
+            if fold == Fold::Few && hidden > 0 {
+                self.rows.push(Row::More { sec, n: hidden });
+            } else if fold == Fold::All && sec == Section::Finished && total > FEW_DONE {
+                self.rows.push(Row::More { sec, n: 0 });
             }
-            self.rows.extend(rows);
         }
         if self.sel_idx().is_none() {
             self.sel = self.rows.iter().find(|r| !matches!(r, Row::Section { .. })).map(|r| self.key(r));
         }
     }
 
+    fn fold(&self, sec: Section) -> Fold {
+        let default = if sec == Section::Finished { Fold::Few } else { Fold::All };
+        self.folds.get(&sec).copied().unwrap_or(default)
+    }
+
+    /// Header click: shut the section, or reopen it to its default.
+    fn toggle_section(&mut self, sec: Section) {
+        if self.fold(sec) == Fold::Shut {
+            self.folds.remove(&sec);
+        } else {
+            self.folds.insert(sec, Fold::Shut);
+        }
+        self.rebuild();
+    }
+
     fn key(&self, r: &Row) -> String {
         match r {
             Row::Section { sec, .. } => format!("§{}", *sec as u8),
+            Row::More { sec, .. } => format!("+{}", *sec as u8),
             Row::Group { run, .. } => run.clone(),
             Row::Agent { idx, .. } => self.agents[*idx].id.clone(),
         }
@@ -228,8 +295,14 @@ impl List {
     }
 
     fn activate(&mut self, i: usize) {
-        if let Some(Row::Agent { idx, .. }) = self.rows.get(i) {
-            self.open_agent(*idx, false);
+        match self.rows.get(i) {
+            Some(Row::Agent { idx, .. }) => self.open_agent(*idx, false),
+            Some(&Row::Section { sec, .. }) => self.toggle_section(sec),
+            Some(&Row::More { sec, n }) => {
+                self.folds.insert(sec, if n > 0 { Fold::All } else { Fold::Few });
+                self.rebuild();
+            }
+            _ => {}
         }
     }
 
@@ -242,9 +315,11 @@ impl List {
             if self.open.contains(&label) {
                 return;
             }
-            if self.open.len() >= MAX_PANES {
-                // Full: the agent that finished longest ago makes room; one that needs the user
-                // (blocked, failed) only when every finished pane needs the user.
+            let room = agent_area().is_none_or(|(_, (w, h))| grid::choose(self.open.len() + 1, w, h).is_some());
+            if !room {
+                // No room for one more readable pane: the agent that finished longest ago makes
+                // room; one that needs the user (blocked, failed) only when every finished pane
+                // needs the user.
                 let victim = self
                     .agents
                     .iter()
@@ -253,7 +328,7 @@ impl List {
                     .map(Agent::pane_label);
                 let Some(victim) = victim else {
                     if !quiet {
-                        self.flash = Some((format!("{MAX_PANES} panes open, all running: close one (q)"), std::time::Instant::now()));
+                        self.flash = Some(("no room for another readable pane: close one (c)".to_string(), std::time::Instant::now()));
                     }
                     return;
                 };
@@ -266,24 +341,27 @@ impl List {
         }
     }
 
-    /// Auto-open: one newly started agent of this run per refresh, each at most once, so a
-    /// pane the user closed stays closed. Waits AUTO_GAP after any open, because the open-pane
-    /// set comes from the worker's scan and lags a fresh split by up to a refresh.
+    /// Auto-open: every newly started agent of this run at once (each at most once, so a pane
+    /// the user closed stays closed), then one re-grid for the new count. Waits AUTO_GAP after
+    /// any open, because the open-pane set comes from the worker's scan and lags a fresh split.
     fn auto_open(&mut self) {
         if !self.auto || !in_herdr() || self.opened_at.is_some_and(|t| t.elapsed() < AUTO_GAP) {
             return;
         }
         let now = data::now_ms();
-        let next = (0..self.agents.len())
+        let mut new: Vec<usize> = (0..self.agents.len())
             .filter(|&i| {
                 let a = &self.agents[i];
                 a.status.is_live() && a.start_ms >= self.since && now - a.start_ms < AUTO_WINDOW_MS && !self.auto_done.contains(&a.id)
             })
-            .min_by_key(|&i| self.agents[i].start_ms);
-        if let Some(i) = next {
+            .collect();
+        new.sort_by_key(|&i| self.agents[i].start_ms);
+        for &i in &new {
             self.auto_done.insert(self.agents[i].id.clone());
             self.open_agent(i, true);
         }
+        // No re-grid here: the new panes label themselves once started; apply() re-grids
+        // when the scan sees them.
     }
 
     fn peek(&self, i: usize) {
@@ -297,6 +375,10 @@ impl List {
         match e {
             Event::Key(k) if k.kind == KeyEventKind::Press => match k.code {
                 KeyCode::Char('q') => {
+                    crate::tui::close_here("agents");
+                    return false;
+                }
+                KeyCode::Char('Q') => {
                     hide_everywhere();
                     return false;
                 }
@@ -329,10 +411,7 @@ impl List {
                     self.show_prev = !self.show_prev;
                     self.rebuild();
                 }
-                KeyCode::Char('a') => {
-                    self.hide_done = !self.hide_done;
-                    self.rebuild();
-                }
+                KeyCode::Char('a') => self.toggle_section(Section::Finished),
                 KeyCode::Char('r') => {
                     let _ = self.kick.send(());
                 }
@@ -390,7 +469,6 @@ impl List {
             _ if self.session.is_none() => Some("no Claude session in this tab"),
             _ if self.all.is_empty() => Some("no subagents yet"),
             _ if self.agents.is_empty() => Some("none since Claude started (p: earlier)"),
-            _ if self.rows.is_empty() => Some("nothing running (a: show done)"),
             _ => None,
         };
         if let Some(msg) = msg {
@@ -439,7 +517,8 @@ impl List {
         }
         hints.push("v peek".into());
         hints.push(if self.auto { "o auto ✓" } else { "o auto" }.into());
-        hints.push(if self.hide_done { "a show ✓" } else { "a hide ✓" }.into());
+        hints.push(if self.fold(Section::Finished) == Fold::Shut { "a show ✓" } else { "a hide ✓" }.into());
+        hints.push("Q hide all".into());
         if earlier > 0 {
             hints.push(if self.show_prev { "p hide earlier".into() } else { format!("p +{earlier} earlier") });
         }
@@ -460,16 +539,21 @@ impl List {
 
     fn row_lines(&self, r: &Row, w: usize, now: i64) -> Vec<Line<'static>> {
         match r {
-            Row::Section { sec, n } => {
+            Row::Section { sec, n, fold } => {
                 let title = match sec {
                     Section::Attention => "NEEDS YOU",
                     Section::Active => "RUNNING",
                     Section::Finished => "FINISHED",
                 };
-                let head = format!(" {title} {n} ");
+                let chev = if *fold == Fold::Shut { "▸" } else { "▾" };
+                let head = format!(" {chev} {title} {n} ");
                 let rule = "─".repeat(w.saturating_sub(head.chars().count() + 1));
                 let color = section_color(*sec);
                 vec![Line::from(vec![Span::styled(head, Style::new().fg(color).bold()), Span::styled(rule, Style::new().fg(Color::DarkGray))])]
+            }
+            Row::More { n, .. } => {
+                let text = if *n > 0 { format!("+{n} more") } else { "show less".into() };
+                vec![Line::from(vec!["   ".into(), text.dark_gray().italic()])]
             }
             Row::Group { name, .. } => {
                 vec![Line::from(vec![" ".into(), "⧉ ".magenta(), truncate(name, w.saturating_sub(4)).magenta().bold()])]
@@ -613,6 +697,104 @@ fn open_pane(a: &Agent) {
     }
     // Waited for, so the next open (auto-open) sees this split in the layout.
     let _ = cmd.status();
+}
+
+/// An agent pane: (pane id, label, [x, y, w, h]).
+type AgentPane = (String, String, [u16; 4]);
+
+/// This tab's agent panes and the size of the area they cover.
+fn agent_area() -> Option<(Vec<AgentPane>, (u16, u16))> {
+    let (panes, me) = tab_panes()?;
+    let labels: HashMap<&str, &str> = panes
+        .iter()
+        .filter(|p| is_agent_pane(p))
+        .filter_map(|p| Some((p["pane_id"].as_str()?, p["label"].as_str()?)))
+        .collect();
+    let layout = herdr_json(&["pane", "layout", "--pane", &me])?;
+    let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0) as u16;
+    let found: Vec<AgentPane> = layout["result"]["layout"]["panes"]
+        .as_array()?
+        .iter()
+        .filter_map(|p| {
+            let id = p["pane_id"].as_str()?;
+            let r = &p["rect"];
+            Some((id.to_string(), labels.get(id)?.to_string(), [n(&r["x"]), n(&r["y"]), n(&r["width"]), n(&r["height"])]))
+        })
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    let x0 = found.iter().map(|p| p.2[0]).min()?;
+    let y0 = found.iter().map(|p| p.2[1]).min()?;
+    let x1 = found.iter().map(|p| p.2[0] + p.2[2]).max()?;
+    let y1 = found.iter().map(|p| p.2[1] + p.2[3]).max()?;
+    Some((found, (x1 - x0, y1 - y0)))
+}
+
+fn herdr_json(args: &[&str]) -> Option<serde_json::Value> {
+    let bin = std::env::var("HERDR_BIN_PATH").ok()?;
+    let out = Command::new(bin).args(args).stderr(Stdio::null()).output().ok()?;
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+/// Re-tiles this tab's agent panes as grid::choose's grid, row-major by `order` (agent start).
+/// herdr has no "set layout": the anchor (oldest) stays, the others park in a hidden tab so the
+/// anchor fills the whole area, then each moves back split off its neighbour at the ratio that
+/// makes equal parts. `pane move` keeps the transcript process; nothing restarts. Skipped when
+/// the panes already sit in that grid, so a scan with the same panes costs one layout read.
+fn regrid_panes(order: &HashMap<String, i64>) -> HashSet<String> {
+    let Some((mut panes, (w, h))) = agent_area() else { return HashSet::new() };
+    let seen: HashSet<String> = panes.iter().map(|p| p.1.clone()).collect();
+    let (n, Some(tab)) = (panes.len(), tab_panes().and_then(|(p, me)| crate::tui::tab_of(&p, &me).and_then(|t| t.as_str().map(String::from)))) else { return seen };
+    if n < 2 {
+        return seen;
+    }
+    panes.sort_by_key(|p| (order.get(&p.1).copied().unwrap_or(i64::MAX), p.1.clone()));
+    let Some((cols, _)) = grid::choose(n, w, h) else { return seen };
+    let plan = grid::columns(n, cols);
+    let (x0, y0) = (panes.iter().map(|p| p.2[0]).min().unwrap_or(0), panes.iter().map(|p| p.2[1]).min().unwrap_or(0));
+    let in_place = plan.iter().enumerate().all(|(c, col)| {
+        col.iter().enumerate().all(|(r, &i)| {
+            let want = [x0 + (w as usize * c / cols) as u16, y0 + (h as usize * r / col.len()) as u16];
+            let at = panes[i].2;
+            at[0].abs_diff(want[0]) <= 2 && at[1].abs_diff(want[1]) <= 2 && at[2].abs_diff((w as usize / cols) as u16) <= 2
+        })
+    });
+    if in_place {
+        return seen;
+    }
+    let id = |i: usize| panes[i].0.as_str();
+    let mv = |args: &[&str]| herdr_json(&[&["pane", "move"], args, &["--no-focus"]].concat());
+    // Park every pane but the anchor; the parking tab closes by itself when its last pane leaves.
+    let mut park: Option<String> = None;
+    for i in 1..n {
+        let out = match &park {
+            None => mv(&[id(i), "--new-tab", "--label", "sidekick-regrid"]),
+            Some(t) => mv(&[id(i), "--tab", t, "--split", "down"]),
+        };
+        if park.is_none() {
+            park = out.and_then(|v| v["result"]["move_result"]["pane"]["tab_id"].as_str().map(String::from));
+            if park.is_none() {
+                return seen; // nothing moved: leave the layout as it was
+            }
+        }
+    }
+    let heads: Vec<usize> = plan.iter().map(|col| col[0]).collect();
+    for c in 1..cols {
+        let ratio = format!("{:.4}", grid::keep_ratio(cols, c));
+        mv(&[id(heads[c]), "--tab", &tab, "--target-pane", id(heads[c - 1]), "--split", "right", "--ratio", &ratio]);
+    }
+    for col in &plan {
+        for r in 1..col.len() {
+            let ratio = format!("{:.4}", grid::keep_ratio(col.len(), r));
+            mv(&[id(col[r]), "--tab", &tab, "--target-pane", id(col[r - 1]), "--split", "down", "--ratio", &ratio]);
+        }
+    }
+    // A moved pane can keep a stale PTY size (herdr 0.9.1); a zero resize resyncs it.
+    for p in &panes {
+        let _ = herdr_json(&["pane", "resize", "--pane", &p.0, "--direction", "down", "--amount", "0"]);
+    }
+    seen
 }
 
 /// While agent panes share the tab, title the Claude pane they came from `★ main`. The title
@@ -779,4 +961,79 @@ pub fn session_blocked(session: &str) -> bool {
 
 fn hide_everywhere() {
     crate::tui::hide_everywhere(super::LABEL, "agents");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(i: i64, status: Status) -> Agent {
+        Agent {
+            id: format!("a{i}"),
+            path: PathBuf::new(),
+            kind: "reviewer".into(),
+            desc: format!("task {i}"),
+            parent: None,
+            group: None,
+            start_ms: i,
+            last_ms: i,
+            status,
+            tools: 0,
+            errors: 0,
+            activity: String::new(),
+            cwd: String::new(),
+        }
+    }
+
+    /// What the list shows, one token per row: S<section> header, A agent, +n more.
+    fn shape(l: &List) -> Vec<String> {
+        l.rows
+            .iter()
+            .map(|r| match r {
+                Row::Section { sec, .. } => format!("S{}", *sec as u8),
+                Row::More { n, .. } => format!("+{n}"),
+                Row::Group { .. } => "G".into(),
+                Row::Agent { .. } => "A".into(),
+            })
+            .collect()
+    }
+
+    fn at(l: &List, token: &str) -> usize {
+        shape(l).iter().position(|t| t == token).expect(token)
+    }
+
+    #[test]
+    fn finished_shows_the_newest_few_and_folds_open_and_shut() {
+        let mut l = List::new();
+        l.all = (0..6).map(|i| agent(i, Status::Done)).chain([agent(9, Status::Thinking)]).collect();
+        l.rebuild();
+        assert_eq!(shape(&l), ["S1", "A", "S2", "A", "A", "A", "+3"], "running in full, finished capped at 3");
+
+        l.activate(at(&l, "+3"));
+        assert_eq!(shape(&l).iter().filter(|t| *t == "A").count(), 7, "+N more shows every finished agent");
+        assert_eq!(shape(&l).last().map(String::as_str), Some("+0"), "then offers show less");
+
+        l.activate(at(&l, "S2"));
+        assert_eq!(shape(&l), ["S1", "A", "S2"], "header click shuts the section but keeps the header");
+
+        l.activate(at(&l, "S2"));
+        assert_eq!(shape(&l), ["S1", "A", "S2", "A", "A", "A", "+3"], "reopening returns to the capped view");
+
+        l.activate(at(&l, "S1"));
+        assert_eq!(shape(&l), ["S1", "S2", "A", "A", "A", "+3"], "any section folds, not only finished");
+    }
+
+    #[test]
+    fn regrid_waits_while_a_just_finished_agents_pane_is_about_to_close() {
+        let mut l = List::new();
+        let now = 100_000;
+        let mut done = agent(1, Status::Done);
+        done.last_ms = now - 1_000;
+        l.all = vec![done, agent(2, Status::Thinking)];
+        l.open = l.all.iter().map(Agent::pane_label).collect();
+        assert!(l.closing_soon(now), "its pane closes itself in a moment: re-gridding now races that close");
+        assert!(!l.closing_soon(now + CLOSE_GRACE_MS), "a pane still open after the grace stays: grid it");
+        l.open.remove(&l.all[0].pane_label());
+        assert!(!l.closing_soon(now), "a finished agent without a pane does not hold the grid");
+    }
 }

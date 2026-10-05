@@ -105,14 +105,23 @@ pub fn main(args: Vec<String>) -> std::io::Result<()> {
 
     let mut term = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
-    let result = run(&mut term, &mut app, rx);
+    let mut binary = crate::tui::Rebuilt::new();
+    let result = run(&mut term, &mut app, rx, &mut binary);
     execute!(std::io::stdout(), DisableMouseCapture)?;
     ratatui::restore();
-    result
+    match result {
+        Ok(true) => Err(binary.reexec()),
+        Ok(false) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
-fn run(term: &mut ratatui::DefaultTerminal, app: &mut App, rx: Receiver<Msg>) -> std::io::Result<()> {
+/// Ok(true): the binary was rebuilt, re-exec it once the terminal is restored.
+fn run(term: &mut ratatui::DefaultTerminal, app: &mut App, rx: Receiver<Msg>, binary: &mut crate::tui::Rebuilt) -> std::io::Result<bool> {
     while !app.quit {
+        if binary.changed() {
+            return Ok(true);
+        }
         while let Ok(m) = rx.try_recv() {
             app.apply(m);
         }
@@ -133,7 +142,7 @@ fn run(term: &mut ratatui::DefaultTerminal, app: &mut App, rx: Receiver<Msg>) ->
             }
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn key(app: &mut App, k: KeyEvent) {
@@ -174,8 +183,19 @@ fn key(app: &mut App, k: KeyEvent) {
             _ => app.mode = Mode::NewBranch(s),
         },
         Mode::ConfirmDelete(path) => {
-            if k.code == KeyCode::Char('y') {
-                app.delete(path);
+            // With uncommitted files only `f` removes: `y` and `b` would fail in git anyway.
+            let dirty = app.rows.iter().find(|r| r.path == path).and_then(|r| r.git.as_ref()).is_some_and(|g| g.dirty > 0);
+            match k.code {
+                KeyCode::Char('y') if !dirty => app.delete(path, false, false),
+                KeyCode::Char('b') if !dirty => app.delete(path, true, false),
+                KeyCode::Char('f') if dirty => app.delete(path, false, true),
+                KeyCode::Char('n') | KeyCode::Esc => {}
+                _ => app.mode = Mode::ConfirmDelete(path),
+            }
+        }
+        Mode::Normal if app.legend => {
+            if matches!(k.code, KeyCode::Char('?' | 'q') | KeyCode::Esc) {
+                app.legend = false;
             }
         }
         Mode::Normal => match k.code {
@@ -201,7 +221,16 @@ fn key(app: &mut App, k: KeyEvent) {
             KeyCode::Char('c') => app.claude(),
             KeyCode::Char('o') => app.open_pr(),
             KeyCode::Char('y') => app.yank(),
-            KeyCode::Char('q') => app.hide(),
+            KeyCode::Char('?') => app.legend = true,
+            KeyCode::Char('x') => app.toggle_hidden(),
+            KeyCode::Char('H') => {
+                app.show_hidden = !app.show_hidden;
+                app.rebuild();
+                let n = app.hidden.len();
+                app.flash(if app.show_hidden { format!("showing {n} hidden") } else { "hidden ones off the board".into() }, true);
+            }
+            KeyCode::Char('q') => app.close_here(),
+            KeyCode::Char('Q') => app.hide(),
             _ => {}
         },
     }
@@ -210,7 +239,13 @@ fn key(app: &mut App, k: KeyEvent) {
 fn mouse(app: &mut App, m: MouseEvent) {
     let at = Position::new(m.column, m.row);
     let hit = app.hits.iter().find(|(r, _)| r.contains(at)).map(|(_, p)| p.clone());
+    let button = app.act_hits.iter().find(|(r, _)| r.contains(at)).map(|(_, a)| *a);
     match m.kind {
+        MouseEventKind::Down(event::MouseButton::Left) if button.is_some() && matches!(app.mode, Mode::Normal) => {
+            if let Some(a) = button {
+                app.act(a);
+            }
+        }
         MouseEventKind::Down(event::MouseButton::Left) => {
             let Some(path) = hit else { return };
             let double =

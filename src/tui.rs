@@ -59,7 +59,18 @@ pub fn close_pane(bin: &str, id: &str) {
     }
 }
 
-/// A panel's `q`: close it in every tab and stop auto-opening it until its toggle action. Done
+/// A panel's `q`: close it in this tab only. Leaves `closed-<panel>-<tab>` so ensure does not
+/// reopen the panel here; the caller then exits, which closes its pane. `Q` is hide_everywhere.
+pub fn close_here(panel: &str) {
+    let Ok(me) = std::env::var("HERDR_PANE_ID") else { return };
+    let panes = pane_list().unwrap_or_default();
+    let Some(tab) = tab_of(&panes, &me).and_then(|t| t.as_str()) else { return };
+    if let Some(flag) = state_file(&format!("closed-{panel}-{tab}")) {
+        let _ = std::fs::write(flag, "");
+    }
+}
+
+/// A panel's `Q`: close it in every tab and stop auto-opening it until its toggle action. Done
 /// in the pane, not via `sidekick.sh off`, because that script would close this pane while it
 /// is still running.
 pub fn hide_everywhere(label: &str, panel: &str) {
@@ -136,10 +147,16 @@ pub fn take_snapshot_arg(args: &mut Vec<String>) -> Option<String> {
 pub fn run(screen: &mut dyn Screen, poll: Duration) -> std::io::Result<()> {
     let mut term = ratatui::init();
     execute!(stdout(), EnableMouseCapture)?;
+    let mut binary = Rebuilt::new();
     let result = (|| loop {
         screen.tick();
         if screen.done() {
             return Ok(());
+        }
+        if binary.changed() {
+            execute!(stdout(), DisableMouseCapture)?;
+            ratatui::restore();
+            return Err(binary.reexec());
         }
         term.draw(|f| screen.render(f))?;
         if event::poll(poll)? && !screen.event(event::read()?) {
@@ -149,6 +166,47 @@ pub fn run(screen: &mut dyn Screen, poll: Duration) -> std::io::Result<()> {
     execute!(stdout(), DisableMouseCapture)?;
     ratatui::restore();
     result
+}
+
+/// Notices a rebuilt binary so a panel restarts itself in place: same pane, args and env, the
+/// layout untouched. Checked once a second by file identity (inode + mtime).
+pub struct Rebuilt {
+    path: Option<PathBuf>,
+    id: Option<(u64, std::time::SystemTime)>,
+    checked: Instant,
+}
+
+impl Rebuilt {
+    pub fn new() -> Self {
+        let path = std::env::current_exe().ok();
+        let id = path.as_deref().and_then(file_id);
+        Rebuilt { path, id, checked: Instant::now() }
+    }
+
+    pub fn changed(&mut self) -> bool {
+        if self.id.is_none() || self.checked.elapsed() < Duration::from_secs(1) {
+            return false;
+        }
+        self.checked = Instant::now();
+        let now = self.path.as_deref().and_then(file_id);
+        // A missing file is a build in progress: wait for the new one to land.
+        now.is_some() && now != self.id
+    }
+
+    /// Returns only on failure (exec replaced the process otherwise).
+    pub fn reexec(&self) -> std::io::Error {
+        use std::os::unix::process::CommandExt;
+        // Let the writer finish: the new file can appear before its last bytes are flushed.
+        std::thread::sleep(Duration::from_millis(300));
+        let Some(path) = &self.path else { return std::io::Error::other("no executable path") };
+        Command::new(path).args(std::env::args_os().skip(1)).exec()
+    }
+}
+
+fn file_id(p: &Path) -> Option<(u64, std::time::SystemTime)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.ino(), m.modified().ok()?))
 }
 
 pub fn print_snapshot(screen: &mut dyn Screen, size: &str, default: (u16, u16)) -> std::io::Result<()> {

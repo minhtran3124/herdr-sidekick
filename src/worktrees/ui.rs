@@ -7,22 +7,74 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use super::app::{App, Mode, Place, Row};
+use super::app::{Act, App, Mode, Place, Row};
 use super::data::now;
 
 const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Every status glyph on the board. Nerd Font glyphs draw wider than their cell, hence the
+/// trailing space on those followed by a count. `WORKTREES_ICONS=plain` = Unicode only.
 struct Icons {
     repo: &'static str,
     pr: &'static str,
     comment: &'static str,
+    here: &'static str,
+    open: &'static str,
+    prune: &'static str,
+    dirty: &'static str,
+    needs: &'static str,
+    done: &'static str,
+    ci_ok: &'static str,
+    ci_fail: &'static str,
+    approved: &'static str,
+    changes: &'static str,
+    open_btn: &'static str,
+    claude_btn: &'static str,
+    hide_btn: &'static str,
+    show_btn: &'static str,
 }
 
 fn icons() -> Icons {
     if std::env::var("WORKTREES_ICONS").as_deref() == Ok("plain") {
-        Icons { repo: "⎇", pr: "#", comment: "c" }
+        Icons {
+            repo: "⎇",
+            pr: "#",
+            comment: "c",
+            here: "◆",
+            open: "◇",
+            prune: "✗",
+            dirty: "✎",
+            needs: "◉",
+            done: "✓",
+            ci_ok: "✓",
+            ci_fail: "✗",
+            approved: "✔",
+            changes: "±",
+            open_btn: "↗",
+            claude_btn: "▶",
+            hide_btn: "⊘",
+            show_btn: "◉",
+        }
     } else {
-        Icons { repo: "\u{e0a0}", pr: "\u{f407} ", comment: "\u{f075} " }
+        Icons {
+            repo: "\u{e0a0}",
+            pr: "\u{f407} ",
+            comment: "\u{f075} ",
+            here: "\u{f041}",     // map marker: the checkout this tab is in
+            open: "\u{eb7f}",     // window: open in another tab
+            prune: "\u{f1f8}",    // trash: folder is gone, prunable
+            dirty: "\u{f040} ",   // pencil: uncommitted files
+            needs: "\u{f0f3} ",   // bell: an agent is waiting on you
+            done: "\u{f11e} ",    // checkered flag: an agent finished
+            ci_ok: "\u{f058} ",   // check circle
+            ci_fail: "\u{f057} ", // x circle
+            approved: "\u{f164}", // thumbs up
+            changes: "\u{f165}",  // thumbs down: changes requested
+            open_btn: "\u{f08e}",   // external link: go to its workspace
+            claude_btn: "\u{f120}", // terminal: start claude there
+            hide_btn: "\u{f070}",   // eye slash: off the board
+            show_btn: "\u{f06e}",   // eye: back on the board
+        }
     }
 }
 
@@ -32,7 +84,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(foot.len() as u16)])
             .areas(f.area());
     header(f, app, head);
-    list(f, app, body);
+    if app.legend {
+        app.hits.clear();
+        f.render_widget(Paragraph::new(legend()), body);
+    } else {
+        list(f, app, body);
+    }
     f.render_widget(Paragraph::new(foot), foot_area);
 }
 
@@ -75,15 +132,19 @@ fn header(f: &mut Frame, app: &App, area: Rect) {
     );
     let n = app.rows.len();
     let mut left: Vec<Span> = vec![format!(" {n} worktree{}", if n == 1 { "" } else { "s" }).fg(Color::DarkGray)];
+    let hidden = app.snap.worktrees.iter().filter(|w| app.hidden.contains(&w.path)).count();
+    if hidden > 0 && !app.show_hidden {
+        left.push(format!(" +{hidden} hidden").fg(Color::DarkGray));
+    }
     let mut badge = |n: usize, glyph: &str, color: Color| {
         if n > 0 {
             left.push(format!("  {glyph}{n}").fg(color).bold());
         }
     };
-    badge(blocked, "◉", Color::Red);
+    badge(blocked, ic.needs, Color::Red);
     badge(working, SPIN[app.frame() % 10], Color::Yellow);
-    badge(done, "✓", Color::Green);
-    badge(failed, "✗", Color::Red);
+    badge(done, ic.done, Color::Green);
+    badge(failed, ic.ci_fail, Color::Red);
     let sync = if app.pr_at == 0 { "⟳ –".to_string() } else { format!("⟳ {} ", age(app.pr_at)) };
     let summary = spread(left, vec![sync.fg(Color::DarkGray)], w);
     f.render_widget(Paragraph::new(vec![title, summary, rule(w)]), area);
@@ -143,14 +204,14 @@ fn card(app: &App, r: &Row, w: u16, sel: bool, hover: bool) -> Vec<Line<'static>
 
     // Line 1: place, branch, dirty / ahead / behind.
     let mark = match r.place {
-        Place::Here => "◆".fg(Color::Cyan),
-        Place::Open => "◇".fg(Color::Cyan),
-        Place::Prunable => "✗".fg(Color::Red),
+        Place::Here => ic.here.fg(Color::Cyan),
+        Place::Open => ic.open.fg(Color::Cyan),
+        Place::Prunable => ic.prune.fg(Color::Red),
         Place::Closed => " ".into(),
     };
     let mut right: Vec<Span> = Vec::new();
     if g.dirty > 0 {
-        right.push(format!("✎{} ", g.dirty).fg(Color::Yellow));
+        right.push(format!("{}{} ", ic.dirty, g.dirty).fg(Color::Yellow));
     }
     if g.ahead > 0 {
         right.push(format!("↑{}", g.ahead).fg(Color::Green));
@@ -165,7 +226,15 @@ fn card(app: &App, r: &Row, w: u16, sel: bool, hover: bool) -> Vec<Line<'static>
     }
     right.push(" ".into());
     let room = (w as usize).saturating_sub(4 + right.iter().map(Span::width).sum::<usize>());
+    let is_hidden = app.hidden.contains(&r.path);
+    if is_hidden {
+        right.insert(0, "hidden ".fg(Color::DarkGray).italic());
+    }
+    let room = room.saturating_sub(if is_hidden { 7 } else { 0 });
     let mut name = Span::raw(cut(&r.branch, room));
+    if is_hidden {
+        name = name.fg(Color::DarkGray);
+    }
     if sel {
         name = name.bold();
     }
@@ -183,7 +252,7 @@ fn card(app: &App, r: &Row, w: u16, sel: bool, hover: bool) -> Vec<Line<'static>
     for (i, a) in r.agents.iter().take(MAX_AGENT_LINES).enumerate() {
         let right = if i == 0 { vec![age_span()] } else { Vec::new() };
         let rw: usize = right.iter().map(Span::width).sum();
-        lines.push(spread(agent_line(a, spin, w as usize - rw, bar()), right, w));
+        lines.push(spread(agent_line(a, spin, &ic, w as usize - rw, bar()), right, w));
     }
     if r.agents.len() > MAX_AGENT_LINES {
         let more = format!("+{} more", r.agents.len() - MAX_AGENT_LINES);
@@ -197,9 +266,11 @@ fn card(app: &App, r: &Row, w: u16, sel: bool, hover: bool) -> Vec<Line<'static>
             left.push(format!("{}{}", ic.pr, pr.n).fg(Color::Magenta));
             left.push(" ".into());
             left.push(match pr.ci.as_str() {
-                "SUCCESS" => "✓".fg(Color::Green),
-                "FAILURE" | "ERROR" if !pr.fails.is_empty() => format!("✗{}", pr.fails.len()).fg(Color::Red).bold(),
-                "FAILURE" | "ERROR" => "✗".fg(Color::Red).bold(),
+                "SUCCESS" => ic.ci_ok.trim_end().fg(Color::Green),
+                "FAILURE" | "ERROR" if !pr.fails.is_empty() => {
+                    format!("{}{}", ic.ci_fail, pr.fails.len()).fg(Color::Red).bold()
+                }
+                "FAILURE" | "ERROR" => ic.ci_fail.trim_end().fg(Color::Red).bold(),
                 "PENDING" | "EXPECTED" => format!("{spin}{}", pr.pending).fg(Color::Yellow),
                 _ => "–".fg(Color::DarkGray),
             });
@@ -207,8 +278,8 @@ fn card(app: &App, r: &Row, w: u16, sel: bool, hover: bool) -> Vec<Line<'static>
                 left.push(format!(" {}{}", ic.comment, pr.t).fg(Color::Yellow));
             }
             match pr.review.as_str() {
-                "APPROVED" => left.push(" ✔".fg(Color::Green)),
-                "CHANGES_REQUESTED" => left.push(" ±".fg(Color::Red)),
+                "APPROVED" => left.push(format!(" {}", ic.approved).fg(Color::Green)),
+                "CHANGES_REQUESTED" => left.push(format!(" {}", ic.changes).fg(Color::Red)),
                 _ => {}
             }
             if pr.draft {
@@ -229,11 +300,17 @@ fn card(app: &App, r: &Row, w: u16, sel: bool, hover: bool) -> Vec<Line<'static>
 const MAX_AGENT_LINES: usize = 3;
 
 /// `⠧ claude · what it is doing`: state glyph, agent name in bold, then the pane title.
-fn agent_line(a: &super::data::Agent, spin: &'static str, width: usize, bar: Span<'static>) -> Vec<Span<'static>> {
+fn agent_line(
+    a: &super::data::Agent,
+    spin: &'static str,
+    ic: &Icons,
+    width: usize,
+    bar: Span<'static>,
+) -> Vec<Span<'static>> {
     let (glyph, state, style) = match a.status.as_str() {
-        "blocked" => ("◉", "needs you", Style::new().fg(Color::Red).bold()),
+        "blocked" => (ic.needs.trim_end(), "needs you", Style::new().fg(Color::Red).bold()),
         "working" => (spin, "", Style::new().fg(Color::Yellow)),
-        "done" => ("✓", "done", Style::new().fg(Color::Green)),
+        "done" => (ic.done.trim_end(), "done", Style::new().fg(Color::Green)),
         "idle" => ("●", "", Style::new().fg(Color::Gray)),
         _ => ("○", "", Style::new().fg(Color::DarkGray)),
     };
@@ -248,6 +325,42 @@ fn agent_line(a: &super::data::Agent, spin: &'static str, width: usize, bar: Spa
         spans.push(Span::styled(cut(&what, room), style));
     }
     spans
+}
+
+/// `?`: what each glyph on a card means, drawn with the glyphs the board is using.
+fn legend() -> Vec<Line<'static>> {
+    let ic = icons();
+    let row = |glyph: String, color: Color, text: &'static str| {
+        Line::from(vec![format!("  {glyph:<5} ").fg(color), text.into()])
+    };
+    let head = |t: &'static str| Line::from(format!(" {t}").fg(Color::DarkGray).bold());
+    vec![
+        head("checkout"),
+        row(ic.here.into(), Color::Cyan, "this tab is in it"),
+        row(ic.open.into(), Color::Cyan, "open in another tab"),
+        row(ic.prune.into(), Color::Red, "folder gone, prunable"),
+        row(format!("{}3", ic.dirty), Color::Yellow, "3 uncommitted files"),
+        row("↑2↓5".into(), Color::Green, "commits ahead / behind"),
+        Line::from(""),
+        head("agents"),
+        row(ic.needs.trim_end().into(), Color::Red, "waiting on you"),
+        row(SPIN[0].into(), Color::Yellow, "working"),
+        row(ic.done.trim_end().into(), Color::Green, "finished"),
+        row("●".into(), Color::Gray, "idle"),
+        Line::from(""),
+        head("pull request"),
+        row(format!("{}12", ic.pr), Color::Magenta, "PR number"),
+        row(ic.ci_ok.trim_end().into(), Color::Green, "CI passed"),
+        row(format!("{}2", ic.ci_fail), Color::Red, "2 CI checks failed"),
+        row(format!("{}3", ic.comment), Color::Yellow, "3 open review threads"),
+        row(ic.approved.into(), Color::Green, "approved"),
+        row(ic.changes.into(), Color::Red, "changes requested"),
+        Line::from(""),
+        head("card bar"),
+        row("▌".into(), Color::Red, "needs you or CI failed"),
+        row("▌".into(), Color::Yellow, "agent working"),
+        row("▌".into(), Color::Green, "agent finished"),
+    ]
 }
 
 fn details(app: &App, r: &Row, g: &super::data::GitInfo, w: u16) -> Vec<Line<'static>> {
@@ -281,6 +394,7 @@ fn details(app: &App, r: &Row, g: &super::data::GitInfo, w: u16) -> Vec<Line<'st
 
 fn list(f: &mut Frame, app: &mut App, area: Rect) {
     app.hits.clear();
+    app.act_hits.clear();
     if app.rows.is_empty() {
         let msg = match (&app.snap.error, app.filter.is_empty()) {
             (Some(e), _) => e.clone(),
@@ -302,13 +416,20 @@ fn list(f: &mut Frame, app: &mut App, area: Rect) {
     for r in &rows {
         let sel = app.selected.as_deref() == Some(r.path.as_str());
         let inner = if sel { w.saturating_sub(2) } else { w };
-        let lines = card(app, r, inner, sel, hover.as_deref() == Some(r.path.as_str()));
+        let mut lines = card(app, r, inner, sel, hover.as_deref() == Some(r.path.as_str()));
+        let mut buttons = Vec::new();
+        if sel {
+            let (line, b) = action_row(app, r, inner);
+            lines.push(line);
+            buttons = b;
+        }
         let h = lines.len() as u16 + if sel { 2 } else { 1 };
-        cards.push((r.path.clone(), sel, lines, y, h));
+        let bar_at = lines.len() as u16; // the action row's line inside the frame (1 = first)
+        cards.push((r.path.clone(), sel, lines, y, h, buttons, bar_at));
         y += h;
     }
     // Keep the selected card fully visible.
-    if let Some((_, _, _, sy, sh)) = cards.iter().find(|c| c.1) {
+    if let Some((_, _, _, sy, sh, _, _)) = cards.iter().find(|c| c.1) {
         if *sy < app.scroll {
             app.scroll = *sy;
         } else if sy + sh > app.scroll + area.height {
@@ -320,13 +441,13 @@ fn list(f: &mut Frame, app: &mut App, area: Rect) {
     // Draw in order of animated position so a card sliding over another stays on top.
     let mut placed: Vec<_> = cards
         .into_iter()
-        .map(|(path, sel, lines, ty, h)| {
+        .map(|(path, sel, lines, ty, h, buttons, bar_at)| {
             let dy = app.slide_y(&path, ty as f32);
-            (path, sel, lines, dy, h)
+            (path, sel, lines, dy, h, buttons, bar_at)
         })
         .collect();
     placed.sort_by(|a, b| a.3.total_cmp(&b.3));
-    for (path, sel, lines, dy, h) in placed {
+    for (path, sel, lines, dy, h, buttons, bar_at) in placed {
         let top = area.y as i32 + dy.round() as i32 - app.scroll as i32;
         let bottom = top + h as i32;
         let (vis_top, vis_bottom) = (top.max(area.y as i32), bottom.min(area.bottom() as i32));
@@ -346,8 +467,49 @@ fn list(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             f.render_widget(para, rect);
         }
+        // Buttons sit on the frame's last inner line; record them only when that line is visible.
+        let bar_y = top + bar_at as i32;
+        if sel && bar_y >= vis_top && bar_y < vis_bottom {
+            for (x, width, a) in buttons {
+                app.act_hits.push((Rect::new(area.x + 1 + x, bar_y as u16, width, 1), a));
+            }
+        }
         app.hits.push((rect, path));
     }
+}
+
+/// Clickable buttons on the selected card: icon + word, or icons alone when the card is narrow.
+/// Returns the line and each button's (x, width) inside the card.
+fn action_row(app: &App, r: &Row, w: u16) -> (Line<'static>, Vec<(u16, u16, Act)>) {
+    let ic = icons();
+    let mut acts = vec![(ic.open_btn, "open", Act::Open, Color::Cyan), (ic.claude_btn, "claude", Act::Claude, Color::Yellow)];
+    if r.pr.as_ref().is_some_and(|p| !p.url.is_empty()) {
+        acts.push((ic.pr, "PR", Act::Pr, Color::Magenta));
+    }
+    let hidden = app.hidden.contains(&r.path);
+    acts.push(if hidden { (ic.show_btn, "unhide", Act::Hide, Color::Gray) } else { (ic.hide_btn, "hide", Act::Hide, Color::Gray) });
+    if r.linked {
+        acts.push((ic.prune, "del", Act::Delete, Color::Red));
+    }
+    let label = |g: &str, word: &str, words: bool| {
+        let g = g.trim_end();
+        if words { format!("{g} {word}") } else { g.to_string() }
+    };
+    let lead = 3u16;
+    let full: usize = acts.iter().map(|(g, wd, ..)| label(g, wd, true).chars().count() + 2).sum();
+    let words = full + lead as usize <= w as usize;
+    let mut spans: Vec<Span<'static>> = vec![Span::raw("   ")];
+    let mut hits = Vec::new();
+    let mut x = lead;
+    for (g, wd, a, color) in acts {
+        let text = label(g, wd, words);
+        let width = text.chars().count() as u16 + 1;
+        spans.push(Span::styled(text, Style::new().fg(color)));
+        spans.push(Span::raw("  "));
+        hits.push((x, width, a));
+        x += width + 1;
+    }
+    (Line::from(spans), hits)
 }
 
 fn hints(pairs: &[(&str, &str)], width: u16) -> Vec<Line<'static>> {
@@ -379,12 +541,24 @@ fn footer(app: &App, w: u16) -> Vec<Line<'static>> {
             vec![("↵", "create"), ("esc", "cancel")],
         ),
         Mode::ConfirmDelete(p) => {
-            let b = app.rows.iter().find(|r| &r.path == p).map(|r| r.branch.clone()).unwrap_or_default();
-            (
-                Line::from(format!(" remove {}? ", cut(&b, w as usize - 14))).fg(Color::Red).bold(),
-                vec![("y", "yes"), ("n", "no")],
-            )
+            let r = app.rows.iter().find(|r| &r.path == p);
+            let b = r.map(|r| r.branch.clone()).unwrap_or_default();
+            let dirty = r.and_then(|r| r.git.as_ref()).map_or(0, |g| g.dirty);
+            if dirty > 0 {
+                (
+                    Line::from(format!(" {dirty} uncommitted file{} in {} will be lost", if dirty == 1 { "" } else { "s" }, cut(&b, (w as usize).saturating_sub(36))))
+                        .fg(Color::Red)
+                        .bold(),
+                    vec![("f", "remove anyway"), ("n", "no")],
+                )
+            } else {
+                (
+                    Line::from(format!(" remove {}? ", cut(&b, (w as usize).saturating_sub(14)))).fg(Color::Red).bold(),
+                    vec![("y", "worktree"), ("b", "+ branch"), ("n", "no")],
+                )
+            }
         }
+        Mode::Normal if app.legend => (Line::from(""), vec![("?", "close"), ("esc", "close")]),
         Mode::Normal => {
             let status = app.status.as_ref().filter(|(_, _, at)| at.elapsed().as_secs() < 5);
             let prompt = match status {
@@ -401,11 +575,15 @@ fn footer(app: &App, w: u16) -> Vec<Line<'static>> {
                     ("⇥", "info"),
                     ("n", "new"),
                     ("d", "del"),
+                    ("x", "hide"),
                     ("c", "claude"),
                     ("o", "PR"),
                     ("y", "copy"),
                     ("/", "find"),
-                    ("q", "hide"),
+                    ("?", "icons"),
+                    ("H", "show hidden"),
+                    ("q", "close"),
+                    ("Q", "close all"),
                 ],
             )
         }
@@ -472,6 +650,49 @@ mod tests {
         assert!(codex < claude, "the agent waiting on you is listed first");
         assert!(lines[codex].contains("needs you"));
         assert!(lines[claude].contains("Fix login"));
+    }
+
+    #[test]
+    fn clicking_the_selected_cards_buttons_hides_it_and_asks_before_deleting() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use crate::worktrees::app::{Act, Mode};
+
+        let (tx, _rx) = channel();
+        let kicks = (0..3).map(|_| channel().0).collect();
+        let mut app = App::new("w1".into(), String::new(), "repo".into(), "/repo".into(), "origin/main".into(), String::new(), Arc::new(Mutex::new(Vec::new())), tx, kicks);
+        let wt = |path: &str, branch: &str| WtRaw { path: path.into(), branch: branch.into(), prunable: false, linked: path != "/repo", open_ws: None };
+        app.apply(Msg::Herdr(HerdrSnap { worktrees: vec![wt("/repo", "main"), wt("/repo/.worktrees/feat", "feat")], agents: Vec::new(), error: None }));
+        app.selected = Some("/repo/.worktrees/feat".into());
+        let Ok(mut term) = Terminal::new(TestBackend::new(38, 30));
+        let mut draw = |app: &mut App| {
+            let Ok(_) = term.draw(|f| super::render(f, app));
+        };
+        draw(&mut app);
+        let click = |app: &mut App, a: Act| {
+            let (r, _) = *app.act_hits.iter().find(|(_, x)| *x == a).expect("button drawn");
+            let m = MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x, row: r.y, modifiers: KeyModifiers::NONE };
+            crate::worktrees::mouse(app, m);
+        };
+
+        click(&mut app, Act::Delete);
+        assert!(matches!(app.mode, Mode::ConfirmDelete(ref p) if p == "/repo/.worktrees/feat"), "del only asks");
+
+        app.mode = Mode::Normal;
+        click(&mut app, Act::Hide);
+        assert!(app.rows.iter().all(|r| r.branch != "feat"), "hide takes the card off the board");
+        app.selected = Some("/repo".into());
+        draw(&mut app);
+        assert!(app.act_hits.iter().all(|(_, a)| *a != Act::Delete), "the main checkout has no delete button");
+    }
+
+    #[test]
+    fn legend_explains_every_card_glyph_within_the_panel_width() {
+        let lines: Vec<String> = super::legend().iter().map(|l| l.to_string()).collect();
+        for meaning in ["this tab is in it", "uncommitted", "waiting on you", "CI checks failed", "approved"] {
+            assert!(lines.iter().any(|l| l.contains(meaning)), "legend explains {meaning}");
+        }
+        let widest = super::legend().iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(widest <= 38, "legend fits the default 38-column board, widest = {widest}");
     }
 
     #[test]

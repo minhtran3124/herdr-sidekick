@@ -1,7 +1,7 @@
 //! Board state: joins the three data sources into ranked rows, tracks selection by path,
 //! animations, and runs user actions off the UI thread.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -68,6 +68,16 @@ pub enum Mode {
     ConfirmDelete(String),
 }
 
+/// A button on the selected card's action row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Act {
+    Open,
+    Claude,
+    Pr,
+    Hide,
+    Delete,
+}
+
 /// Vertical position of a card, eased from its old slot to its new one when rows re-sort.
 struct Slide {
     from: f32,
@@ -96,6 +106,11 @@ pub struct App {
     pub selected: Option<String>,
     pub hover: Option<String>,
     pub expanded: bool,
+    /// Worktree paths taken off the board with `x` (kept in the state dir); `H` shows them.
+    pub hidden: HashSet<String>,
+    pub show_hidden: bool,
+    /// `?`: the icon legend replaces the list.
+    pub legend: bool,
     pub filter: String,
     pub mode: Mode,
     pub status: Option<(String, bool, Instant)>,
@@ -103,6 +118,8 @@ pub struct App {
     pub scroll: u16,
     /// Card rects from the last frame, for mouse hit-testing.
     pub hits: Vec<(Rect, String)>,
+    /// The selected card's action buttons from the last frame.
+    pub act_hits: Vec<(Rect, Act)>,
     pub last_click: Option<(String, Instant)>,
     pub git_paths: Arc<Mutex<Vec<String>>>,
     pub tx: Sender<Msg>,
@@ -144,12 +161,16 @@ impl App {
             selected: None,
             hover: None,
             expanded: false,
+            hidden: load_hidden(),
+            show_hidden: false,
+            legend: false,
             filter: String::new(),
             mode: Mode::Normal,
             status: None,
             started: Instant::now(),
             scroll: 0,
             hits: Vec::new(),
+            act_hits: Vec::new(),
             last_click: None,
             quit: false,
             slides: HashMap::new(),
@@ -233,6 +254,7 @@ impl App {
                 }
             })
             .filter(|r| fuzzy(&self.filter, &r.branch))
+            .filter(|r| self.show_hidden || !self.hidden.contains(&r.path))
             .collect();
         rows.sort_by_key(Row::rank);
 
@@ -321,16 +343,70 @@ impl App {
         });
     }
 
-    pub fn delete(&mut self, path: String) {
+    /// A click on the selected card's action row: the same as its key.
+    pub fn act(&mut self, a: Act) {
+        match a {
+            Act::Open => self.open_selected(),
+            Act::Claude => self.claude(),
+            Act::Pr => self.open_pr(),
+            Act::Hide => self.toggle_hidden(),
+            Act::Delete => {
+                if let Some(r) = self.selected_row().filter(|r| r.linked) {
+                    self.mode = Mode::ConfirmDelete(r.path.clone());
+                }
+            }
+        }
+    }
+
+    /// `x`: take the selected worktree off the board, or put a hidden one back.
+    pub fn toggle_hidden(&mut self) {
+        let Some(r) = self.selected_row() else { return };
+        let (path, branch) = (r.path.clone(), r.branch.clone());
+        let text = if self.hidden.remove(&path) {
+            format!("{branch} back on the board")
+        } else {
+            self.hidden.insert(path);
+            format!("hid {branch} · H shows hidden")
+        };
+        save_hidden(&self.hidden);
+        self.flash(text, true);
+        self.rebuild();
+    }
+
+    /// `d` confirmed. `force` drops uncommitted changes; `branch` also deletes the branch with
+    /// `git branch -d`, which refuses an unmerged one (that is reported, never forced).
+    pub fn delete(&mut self, path: String, branch: bool, force: bool) {
         let Some(r) = self.rows.iter().find(|r| r.path == path).cloned() else { return };
         if !r.linked {
             return self.flash("main checkout can't be removed", false);
         }
+        if self.hidden.remove(&path) {
+            save_hidden(&self.hidden);
+        }
         let root = self.root.clone();
-        self.background(move || match &r.open_ws {
-            // Let herdr close the workspace and run `git worktree remove` itself.
-            Some(ws) => herdr(&["worktree", "remove", "--workspace", ws]).map(|_| format!("removed {}", r.branch)),
-            None => cmd("git", &["-C", &root, "worktree", "remove", &r.path]).map(|_| format!("removed {}", r.branch)),
+        self.flash(format!("removing {}…", r.branch), true);
+        self.background(move || {
+            let mut args = vec!["-C", root.as_str(), "worktree", "remove"];
+            if force {
+                args.push("--force");
+            }
+            args.push(&r.path);
+            match (&r.open_ws, r.place) {
+                // The folder is gone already: only git's record of it is left.
+                (_, Place::Prunable) => cmd("git", &["-C", &root, "worktree", "prune"]),
+                // Let herdr close the workspace and run `git worktree remove` itself.
+                (Some(ws), _) if force => herdr(&["worktree", "remove", "--workspace", ws, "--force"]),
+                (Some(ws), _) => herdr(&["worktree", "remove", "--workspace", ws]),
+                (None, _) => cmd("git", &args),
+            }?;
+            let mut text = format!("removed {}", r.branch);
+            if branch && !r.branch.is_empty() {
+                match cmd("git", &["-C", &root, "branch", "-d", &r.branch]) {
+                    Ok(_) => text.push_str(" + branch"),
+                    Err(_) => text.push_str("; branch kept (not merged)"),
+                }
+            }
+            Ok(text)
         });
     }
 
@@ -383,10 +459,32 @@ impl App {
         self.flash("path copied", true);
     }
 
+    /// `q`: close the board in this tab only.
+    pub fn close_here(&mut self) {
+        crate::tui::close_here("worktrees");
+        self.quit = true;
+    }
+
+    /// `Q`: hide the board in every tab and stop it auto-opening.
     pub fn hide(&mut self) {
         let _ =
             Command::new("bash").arg(format!("{}/sidekick.sh", self.plugin_root)).args(["off", "worktrees"]).stdin(Stdio::null()).status();
         self.quit = true;
+    }
+}
+
+fn load_hidden() -> HashSet<String> {
+    crate::tui::state_file("hidden-worktrees")
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.lines().filter(|l| !l.is_empty()).map(String::from).collect())
+        .unwrap_or_default()
+}
+
+fn save_hidden(hidden: &HashSet<String>) {
+    if let Some(p) = crate::tui::state_file("hidden-worktrees") {
+        let mut lines: Vec<&str> = hidden.iter().map(String::as_str).collect();
+        lines.sort_unstable();
+        let _ = std::fs::write(p, lines.join("\n"));
     }
 }
 
@@ -473,6 +571,87 @@ mod tests {
 
     fn row<'a>(a: &'a App, path: &str) -> &'a Row {
         a.rows.iter().find(|r| r.path == path).expect("row")
+    }
+
+    #[test]
+    fn hidden_worktree_leaves_the_board_until_shown_or_unhidden() {
+        let mut a = app();
+        a.apply(snap(vec![]));
+        a.selected = Some(FEAT.into());
+        a.toggle_hidden();
+        assert!(a.rows.iter().all(|r| r.path != FEAT), "x takes it off the board");
+        a.show_hidden = true;
+        a.rebuild();
+        assert!(a.rows.iter().any(|r| r.path == FEAT), "H shows it again");
+        a.selected = Some(FEAT.into());
+        a.toggle_hidden();
+        a.show_hidden = false;
+        a.rebuild();
+        assert!(a.rows.iter().any(|r| r.path == FEAT), "x on a hidden one puts it back");
+    }
+
+    /// A real repo with one linked worktree on branch `feat`; returns (root, worktree path).
+    fn git_repo(name: &str) -> (String, String) {
+        let root = std::env::temp_dir().join(format!("sidekick-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("tmp dir");
+        let root = root.to_string_lossy().into_owned();
+        let wt = format!("{root}/.worktrees/feat");
+        let git = |args: &[&str]| cmd("git", &[&["-C", &root, "-c", "user.name=t", "-c", "user.email=t@t"], args].concat()).expect("git");
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&["worktree", "add", "-q", "-b", "feat", &wt]);
+        (root, wt)
+    }
+
+    fn delete_and_wait(root: &str, wt: &str, branch: bool, force: bool) -> (String, bool) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let kicks = (0..3).map(|_| std::sync::mpsc::channel().0).collect();
+        let mut a = App::new("w1".into(), String::new(), "repo".into(), root.into(), "main".into(), String::new(), Arc::new(Mutex::new(Vec::new())), tx, kicks);
+        a.apply(Msg::Herdr(HerdrSnap {
+            worktrees: vec![
+                WtRaw { path: root.into(), branch: "main".into(), prunable: false, linked: false, open_ws: None },
+                WtRaw { path: wt.into(), branch: "feat".into(), prunable: false, linked: true, open_ws: None },
+            ],
+            agents: Vec::new(),
+            error: None,
+        }));
+        a.delete(wt.into(), branch, force);
+        match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Msg::Status(text, ok)) => (text, ok),
+            _ => panic!("no status from delete"),
+        }
+    }
+
+    fn has_branch(root: &str, b: &str) -> bool {
+        cmd("git", &["-C", root, "rev-parse", "--verify", "-q", &format!("refs/heads/{b}")]).is_ok()
+    }
+
+    #[test]
+    fn delete_with_branch_removes_a_merged_branch_but_keeps_an_unmerged_one() {
+        let (root, wt) = git_repo("merged");
+        let (text, ok) = delete_and_wait(&root, &wt, true, false);
+        assert!(ok && text.ends_with("+ branch"), "{text}");
+        assert!(!std::path::Path::new(&wt).exists() && !has_branch(&root, "feat"));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let (root, wt) = git_repo("unmerged");
+        cmd("git", &["-C", &wt, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "work"]).expect("commit");
+        let (text, ok) = delete_and_wait(&root, &wt, true, false);
+        assert!(ok && text.contains("branch kept"), "{text}");
+        assert!(has_branch(&root, "feat"), "an unmerged branch is never force-deleted");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn uncommitted_work_survives_a_plain_delete_and_goes_only_with_force() {
+        let (root, wt) = git_repo("dirty");
+        std::fs::write(format!("{wt}/notes.txt"), "keep me").expect("write");
+        let (_, ok) = delete_and_wait(&root, &wt, false, false);
+        assert!(!ok && std::path::Path::new(&format!("{wt}/notes.txt")).exists(), "git refuses without force");
+        let (text, ok) = delete_and_wait(&root, &wt, false, true);
+        assert!(ok && !std::path::Path::new(&wt).exists(), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
