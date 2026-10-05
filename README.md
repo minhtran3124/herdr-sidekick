@@ -2,15 +2,7 @@
 
 Side panels for [herdr](https://herdr.dev) when you run coding agents in parallel:
 
-```
-┌──────────────────────────┬─ ± changes ──┬─ ⎇ worktrees ─┐
-│                          │ files vs HEAD│ main      ✎5  │
-│   your Claude pane       │ click → diff │  ● claude …   │
-│                          ├─ ◈ agents ───┤ fix/…  #1309 ✓│
-│                          │ NEEDS YOU 1  │ refactor/…    │
-│                          │ RUNNING 2    │               │
-└──────────────────────────┴──────────────┴───────────────┘
-```
+![Sidekick in herdr: a Claude pane, then changed files over its subagents, then the worktree board](docs/screenshot.png)
 
 - **⎇ worktrees**: every git worktree of the repo as a card, with its agents, changed-file count,
   ahead/behind and PR + CI status. Opens when the repo has 2+ worktrees.
