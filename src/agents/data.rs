@@ -110,12 +110,25 @@ pub struct Agent {
     pub activity: String,
     /// Working directory the agent ran in; its pane opens there.
     pub cwd: String,
+    /// Model and reasoning effort of its latest reply (effort is absent for some models).
+    pub model: String,
+    pub effort: String,
 }
 
 impl Agent {
-    /// Pane label of this agent's split pane; `#<id8>` lets the list find it again.
+    /// `opus-5-5 · high`, or whatever of the two is known.
+    pub fn model_tag(&self) -> String {
+        model_tag(&self.model, &self.effort)
+    }
+
+    /// Pane label of this agent's split pane, with the model tag once known.
     pub fn pane_label(&self) -> String {
-        pane_label(&self.desc, &self.kind, &self.id)
+        pane_label(&self.desc, &self.kind, &self.id, &self.model_tag())
+    }
+
+    /// What identifies this agent's pane across label changes; see `pane_key`.
+    pub fn pane_key(&self) -> String {
+        pane_key(&self.pane_label()).to_string()
     }
 
     pub fn elapsed_ms(&self, now: i64) -> i64 {
@@ -145,6 +158,8 @@ pub struct Summary {
     pub errors: usize,
     pub activity: String,
     pub cwd: String,
+    pub model: String,
+    pub effort: String,
 }
 
 impl Summary {
@@ -172,6 +187,12 @@ impl Summary {
                     return;
                 }
                 self.failed = None;
+                if let Some(m) = msg["model"].as_str().filter(|m| !m.starts_with('<')) {
+                    self.model = m.to_string();
+                }
+                if let Some(e) = v["effort"].as_str() {
+                    self.effort = e.to_string();
+                }
                 for b in blocks() {
                     match b["type"].as_str() {
                         Some("tool_use") => {
@@ -294,12 +315,33 @@ impl Summary {
     }
 }
 
+/// `claude-opus-5-5-20251001` -> `opus-5-5`.
+pub fn short_model(m: &str) -> String {
+    let m = m.strip_prefix("claude-").unwrap_or(m);
+    match m.rsplit_once('-') {
+        Some((head, tail)) if tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit()) => head.to_string(),
+        _ => m.to_string(),
+    }
+}
+
+pub fn model_tag(model: &str, effort: &str) -> String {
+    [short_model(model), effort.to_string()].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" · ")
+}
+
 pub const PANE_PREFIX: &str = "◇ ";
 
-pub fn pane_label(desc: &str, kind: &str, id: &str) -> String {
+/// `◇ title #id8 · model · effort`; the tag changes as the agent runs, the `#id8` never does.
+pub fn pane_label(desc: &str, kind: &str, id: &str, tag: &str) -> String {
     let title = if desc.is_empty() { kind } else { desc };
     let short: String = title.chars().take(28).collect();
-    format!("{PANE_PREFIX}{short} #{}", id.get(..8).unwrap_or(id))
+    let tag = if tag.is_empty() { String::new() } else { format!(" · {tag}") };
+    format!("{PANE_PREFIX}{short} #{}{tag}", id.get(..8).unwrap_or(id))
+}
+
+/// The `#id8` of a pane label: how the list finds a pane again whatever its tag says now.
+pub fn pane_key(label: &str) -> &str {
+    let from = label.rfind(" #").map_or(0, |i| i + 1);
+    label[from..].split(' ').next().unwrap_or("")
 }
 
 /// A failed or blocked agent stops needing the user once the same task (same type and
@@ -484,6 +526,8 @@ impl Scanner {
                 errors: sum.errors,
                 activity: sum.current(),
                 cwd: sum.cwd.clone(),
+                model: if sum.model.is_empty() { meta["model"].as_str().unwrap_or("").to_string() } else { sum.model.clone() },
+                effort: sum.effort.clone(),
                 path,
             });
         }
@@ -899,7 +943,24 @@ mod tests {
             errors: 0,
             activity: String::new(),
             cwd: String::new(),
+            model: String::new(),
+            effort: String::new(),
         }
+    }
+
+    #[test]
+    fn pane_key_ignores_the_title_and_the_tag() {
+        let a = pane_label("Fix #12 now", "k", "a30f38f0624e", "opus-5-5 · high");
+        assert_eq!(pane_key(&a), "#a30f38f0");
+        assert_eq!(pane_key(&pane_label("Fix #12 now", "k", "a30f38f0624e", "")), "#a30f38f0");
+    }
+
+    #[test]
+    fn model_tag_shortens_the_model_and_skips_what_is_unknown() {
+        assert_eq!(model_tag("claude-haiku-4-5-20251001", ""), "haiku-4-5");
+        assert_eq!(model_tag("claude-opus-5-5", "high"), "opus-5-5 · high");
+        assert_eq!(model_tag("", "medium"), "medium");
+        assert_eq!(model_tag("", ""), "");
     }
 
     #[test]

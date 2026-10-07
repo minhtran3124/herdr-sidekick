@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::data::{self, fmt_dur, fmt_tokens, Parents, Section, Status, Summary, Told};
 use super::list::{badge, session_blocked};
-use crate::tui::truncate;
+use crate::tui::{self, truncate};
 
 const RELOAD: Duration = Duration::from_millis(700);
 /// Long enough to see the final status, short enough not to pile up finished panes.
@@ -41,6 +41,9 @@ pub struct View {
     kind: String,
     desc: String,
     model: String,
+    effort: String,
+    /// Label last given to this split pane (None: not a split pane, or a snapshot).
+    label: Option<String>,
     sum: Summary,
     mtime: i64,
     /// Foreground agent: its approval prompts show in the parent pane (see Summary::status).
@@ -84,6 +87,8 @@ impl View {
             kind: meta["agentType"].as_str().unwrap_or("agent").into(),
             desc: meta["description"].as_str().unwrap_or("").into(),
             model: meta["model"].as_str().unwrap_or("").into(),
+            effort: String::new(),
+            label: None,
             sum: Summary::default(),
             mtime: 0,
             can_ask: meta["requestNonInteractive"] != true,
@@ -115,7 +120,21 @@ impl View {
     /// Label for this view's split pane (overlays keep herdr's own label).
     pub fn pane_label(&self) -> String {
         let id = self.path.file_stem().map(|s| s.to_string_lossy().trim_start_matches("agent-").to_string()).unwrap_or_default();
-        data::pane_label(&self.desc, &self.kind, &id)
+        data::pane_label(&self.desc, &self.kind, &id, &data::model_tag(&self.model, &self.effort))
+    }
+
+    /// Starts keeping the split pane's label current (model and effort change as it runs).
+    pub fn follow_label(&mut self) {
+        self.label = Some(String::new());
+        self.sync_label();
+    }
+
+    fn sync_label(&mut self) {
+        let now = self.pane_label();
+        if self.label.as_ref().is_some_and(|l| *l != now) {
+            tui::herdr(&["pane", "rename", "$PANE", &now]);
+            self.label = Some(now);
+        }
     }
 
     pub fn tick(&mut self) {
@@ -128,6 +147,7 @@ impl View {
             self.size = size;
             self.load();
             self.built_for = None;
+            self.sync_label();
         }
         self.told = self.parents.told(&self.path, &self.meta);
         // Only an agent with an open call can be the one waiting on the parent's approval prompt.
@@ -191,8 +211,11 @@ impl View {
                     }
                 }
                 Some("assistant") => {
-                    if let Some(m) = msg["model"].as_str() {
+                    if let Some(m) = msg["model"].as_str().filter(|m| !m.starts_with('<')) {
                         self.model = m.to_string();
+                    }
+                    if let Some(e) = r["effort"].as_str() {
+                        self.effort = e.to_string();
                     }
                     if let (Some(id), Some(n)) = (msg["id"].as_str(), msg["usage"]["output_tokens"].as_u64()) {
                         tokens.insert(id.to_string(), n);
@@ -380,7 +403,14 @@ impl View {
         let (icon, color) = badge(&status, now);
         let end = if status.is_live() { now } else { self.sum.last_ms };
         let took = fmt_dur((end - self.sum.start_ms).max(0));
-        let right = vec![Span::styled(format!("{icon} {}", status.label(now)), color), format!(" · {took} ").gray()];
+        let mut right = Vec::new();
+        let tag = data::model_tag(&self.model, &self.effort);
+        if !tag.is_empty() {
+            right.push(Span::styled(format!("{tag} "), Style::new().fg(Color::Cyan)));
+            right.push("│ ".dark_gray());
+        }
+        right.push(Span::styled(format!("{icon} {}", status.label(now)), color));
+        right.push(format!(" · {took} ").gray());
         let rw: usize = right.iter().map(Span::width).sum();
         let chip = Span::styled(" ◇ SUBAGENT ", Style::new().fg(Color::Rgb(20, 18, 34)).bg(GUTTER).bold());
         let tag = " read-only ".dark_gray();
@@ -393,7 +423,7 @@ impl View {
         buf.set_style(ratatui::layout::Rect::new(0, 0, area.width, 1), Style::new().bg(BAND_BG));
         buf.set_line(0, 0, &Line::from(left), area.width);
         let id = self.path.file_stem().map(|s| s.to_string_lossy().trim_start_matches("agent-").to_string()).unwrap_or_default();
-        let sub = format!("  {} · {} · {} tools · {} out tokens · {id}", self.kind, self.model, self.sum.tools, fmt_tokens(self.out_tokens));
+        let sub = format!("  {} · {} tools · {} out tokens · {id}", self.kind, self.sum.tools, fmt_tokens(self.out_tokens));
         buf.set_line(0, 1, &Line::from(truncate(&sub, w).dark_gray()), area.width);
 
         self.height = area.height.saturating_sub(3) as usize;
