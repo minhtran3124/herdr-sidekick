@@ -160,7 +160,7 @@ impl List {
     /// mid-regrid hands its space to the wrong neighbour (the main pane shrank 107 → 90).
     fn closing_soon(&self, now: i64) -> bool {
         self.all.iter().any(|a| {
-            a.status.section() == Section::Finished && now - a.last_ms < CLOSE_GRACE_MS && self.open.contains(&a.pane_label())
+            a.status.section() == Section::Finished && now - a.last_ms < CLOSE_GRACE_MS && self.open.contains(&a.pane_key())
         })
     }
 
@@ -168,7 +168,7 @@ impl List {
     /// Remembers the panes it actually laid out: a pane that has not labelled itself yet (its
     /// process is still starting) is missed now and picked up by the next scan.
     fn regrid(&mut self) {
-        let order: HashMap<String, i64> = self.all.iter().map(|a| (a.pane_label(), a.start_ms)).collect();
+        let order: HashMap<String, i64> = self.all.iter().map(|a| (a.pane_key(), a.start_ms)).collect();
         self.gridded = regrid_panes(&order);
     }
 
@@ -311,7 +311,7 @@ impl List {
     fn open_agent(&mut self, idx: usize, quiet: bool) {
         {
             let a = &self.agents[idx];
-            let label = a.pane_label();
+            let label = a.pane_key();
             if self.open.contains(&label) {
                 return;
             }
@@ -323,9 +323,9 @@ impl List {
                 let victim = self
                     .agents
                     .iter()
-                    .filter(|x| self.open.contains(&x.pane_label()) && !x.status.is_live())
+                    .filter(|x| self.open.contains(&x.pane_key()) && !x.status.is_live())
                     .min_by_key(|x| (x.status.section() == Section::Attention, x.last_ms))
-                    .map(Agent::pane_label);
+                    .map(Agent::pane_key);
                 let Some(victim) = victim else {
                     if !quiet {
                         self.flash = Some(("no room for another readable pane: close one (c)".to_string(), std::time::Instant::now()));
@@ -563,7 +563,7 @@ impl List {
                 let indent = " ".repeat(1 + depth * 2);
                 let (icon, color) = badge(&a.status, now);
                 let mut right = vec![Span::from(fmt_dur(a.elapsed_ms(now))).dark_gray(), " ".into()];
-                if self.open.contains(&a.pane_label()) {
+                if self.open.contains(&a.pane_key()) {
                     right.insert(0, "▣ ".cyan());
                 }
                 let title = if a.desc.is_empty() { a.kind.clone() } else { a.desc.clone() };
@@ -582,13 +582,16 @@ impl List {
                     rest.push_str(&format!(" · {} err", a.errors));
                 }
                 let lead = format!("{indent}  ");
-                let room = w.saturating_sub(lead.len() + label.chars().count() + 4);
-                let line2 = Line::from(vec![
-                    lead.into(),
-                    Span::styled(label, color),
-                    " · ".dark_gray(),
-                    truncate(&rest, room).dark_gray(),
-                ]);
+                let tag = a.model_tag();
+                let tag_w = if tag.is_empty() { 0 } else { tag.chars().count() + 3 };
+                let room = w.saturating_sub(lead.len() + label.chars().count() + 4 + tag_w);
+                let mut line2 = vec![lead.into(), Span::styled(label, color), " · ".dark_gray()];
+                if !tag.is_empty() {
+                    line2.push(Span::styled(tag, Style::new().fg(Color::Cyan)));
+                    line2.push(" · ".dark_gray());
+                }
+                line2.push(truncate(&rest, room).dark_gray());
+                let line2 = Line::from(line2);
                 vec![line1, line2]
             }
         }
@@ -654,7 +657,7 @@ fn is_agent_pane(p: &serde_json::Value) -> bool {
 
 fn open_agent_panes(all: &[serde_json::Value]) -> HashSet<String> {
     let Some((panes, _)) = tab_panes_in(all) else { return HashSet::new() };
-    panes.iter().filter(|p| is_agent_pane(p)).filter_map(|p| p["label"].as_str().map(String::from)).collect()
+    panes.iter().filter(|p| is_agent_pane(p)).filter_map(|p| p["label"].as_str().map(|l| data::pane_key(l).to_string())).collect()
 }
 
 /// Main + stack: the first agent pane splits the largest work pane (the main Claude pane) to the
@@ -708,7 +711,7 @@ fn agent_area() -> Option<(Vec<AgentPane>, (u16, u16))> {
     let labels: HashMap<&str, &str> = panes
         .iter()
         .filter(|p| is_agent_pane(p))
-        .filter_map(|p| Some((p["pane_id"].as_str()?, p["label"].as_str()?)))
+        .filter_map(|p| Some((p["pane_id"].as_str()?, data::pane_key(p["label"].as_str()?))))
         .collect();
     let layout = herdr_json(&["pane", "layout", "--pane", &me])?;
     let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0) as u16;
@@ -813,10 +816,10 @@ fn mark_main(pane: &str, name: &str) {
         .status();
 }
 
-/// Closes this tab's agent panes: all of them (`c`), or the one with `only` as its label.
+/// Closes this tab's agent panes: all of them (`c`), or the one with `only` as its key.
 fn close_agent_panes(only: Option<&str>) {
     let (Some((panes, _)), Ok(bin)) = (tab_panes(), std::env::var("HERDR_BIN_PATH")) else { return };
-    let chosen = panes.iter().filter(|p| is_agent_pane(p) && only.is_none_or(|l| p["label"] == l));
+    let chosen = panes.iter().filter(|p| is_agent_pane(p) && only.is_none_or(|k| p["label"].as_str().is_some_and(|l| data::pane_key(l) == k)));
     for id in chosen.filter_map(|p| p["pane_id"].as_str()) {
         crate::tui::close_pane(&bin, id);
     }
@@ -982,6 +985,8 @@ mod tests {
             errors: 0,
             activity: String::new(),
             cwd: String::new(),
+            model: String::new(),
+            effort: String::new(),
         }
     }
 
@@ -1030,10 +1035,10 @@ mod tests {
         let mut done = agent(1, Status::Done);
         done.last_ms = now - 1_000;
         l.all = vec![done, agent(2, Status::Thinking)];
-        l.open = l.all.iter().map(Agent::pane_label).collect();
+        l.open = l.all.iter().map(Agent::pane_key).collect();
         assert!(l.closing_soon(now), "its pane closes itself in a moment: re-gridding now races that close");
         assert!(!l.closing_soon(now + CLOSE_GRACE_MS), "a pane still open after the grace stays: grid it");
-        l.open.remove(&l.all[0].pane_label());
+        l.open.remove(&l.all[0].pane_key());
         assert!(!l.closing_soon(now), "a finished agent without a pane does not hold the grid");
     }
 }

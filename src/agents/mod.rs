@@ -78,7 +78,7 @@ pub fn view_main(mut args: Vec<String>) -> std::io::Result<()> {
     if snapshot.is_none() {
         // Only split panes are renamed: an overlay may carry the id of the pane underneath.
         if std::env::var("AGENT_PANE").as_deref() == Ok("split") {
-            tui::herdr(&["pane", "rename", "$PANE", &v.pane_label()]);
+            v.follow_label();
         }
         tui::resync_size();
     }
