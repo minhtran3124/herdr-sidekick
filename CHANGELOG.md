@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Agents panel: each subagent shows its model and reasoning effort (e.g. `opus-5-5 · high`) on
+  its list row, in the transcript's title band, and in the split pane's border label. The label
+  updates as the model or effort changes; effort is omitted for models that do not record it.
+- Panes are matched by the `#id8` in their label rather than the whole label, so the changing
+  tag no longer breaks the open set, the grid order or closing a pane. Panes opened before this
+  version keep their old label until reopened.
+
 ## 0.1.1
 
 - Worktree board: Nerd Font status icons with a `?` legend (`WORKTREES_ICONS=plain` keeps
