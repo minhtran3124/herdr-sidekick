@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Agents panel: keeps listing subagents after Claude Code enters a worktree mid-session. Claude
+  Code then moves the session's transcripts to the worktree's project directory; the panel kept
+  scanning the old, now missing directory and showed "no subagents yet". It now finds the session
+  again when the followed directory loses its `subagents/`.
+
 ## 0.2.1
 
 - **Sidekick: add tab-bar summary** now merges into a config.toml that already has its own `[ui]`

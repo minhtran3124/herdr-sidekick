@@ -878,6 +878,17 @@ fn spawn() -> (Receiver<Snap>, Sender<()>) {
             if blocked != scanned_blocked {
                 dirty = true;
             }
+            // Entering a worktree moves the session to another project directory: drop the old
+            // path so the lookup below finds the new one.
+            if dir.as_deref().is_some_and(data::dir_moved) {
+                dir = None;
+                scanner = Scanner::default();
+                (agents, groups) = (Vec::new(), HashMap::new());
+                if let Some(w) = watch.as_mut() {
+                    w.follow(None);
+                }
+                dirty = true;
+            }
             // A new session has no directory until its first subagent; keep looking until then.
             if dir.is_none() {
                 dir = session.as_deref().and_then(data::session_dir);

@@ -602,7 +602,17 @@ pub fn config_dir() -> PathBuf {
 /// `<config>/projects/*/<session>` that holds `subagents/`. The same id can also appear under
 /// another project (a workflow run from a different cwd leaves only `workflows/` there).
 pub fn session_dir(session: &str) -> Option<PathBuf> {
-    std::fs::read_dir(config_dir().join("projects")).ok()?.flatten().map(|e| e.path().join(session)).find(|p| p.join("subagents").is_dir())
+    session_dir_in(&config_dir(), session)
+}
+
+fn session_dir_in(config: &Path, session: &str) -> Option<PathBuf> {
+    std::fs::read_dir(config.join("projects")).ok()?.flatten().map(|e| e.path().join(session)).find(|p| p.join("subagents").is_dir())
+}
+
+/// A followed session directory that no longer holds `subagents/`: Claude Code moves a session to
+/// another project directory when it enters a worktree, so the old path is gone mid-session.
+pub fn dir_moved(dir: &Path) -> bool {
+    !dir.join("subagents").is_dir()
 }
 
 /// Display name and process start of the Claude running a session, from
@@ -896,6 +906,22 @@ mod tests {
         assert_eq!(s.info("s1"), Some(("renamed".into(), 200)));
         assert_eq!(s.info("other"), None);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn session_dir_is_found_again_after_the_session_moves_project() {
+        let config = std::env::temp_dir().join(format!("agents-moved-test-{}", std::process::id()));
+        let old = config.join("projects/-repo/s1");
+        std::fs::create_dir_all(old.join("subagents")).unwrap();
+        assert_eq!(session_dir_in(&config, "s1"), Some(old.clone()));
+        assert!(!dir_moved(&old));
+        // Claude Code entered a worktree: the session now lives under the worktree's project.
+        let new = config.join("projects/-repo--worktrees-feat/s1");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::rename(&old, &new).unwrap();
+        assert!(dir_moved(&old));
+        assert_eq!(session_dir_in(&config, "s1"), Some(new));
+        std::fs::remove_dir_all(config).unwrap();
     }
 
     #[test]
