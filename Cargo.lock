@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "sidekick"
-version = "0.3.0"
+version = "0.2.2"
 dependencies = [
  "notify",
  "ratatui",

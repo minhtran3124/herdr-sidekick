@@ -1,6 +1,6 @@
 [package]
 name = "sidekick"
-version = "0.3.0"
+version = "0.2.2"
 edition = "2021"
 description = "herdr side panels for coding agents: worktrees, changes and Claude Code subagents"
 license = "MIT"
