@@ -45,18 +45,49 @@ commit() {
   "$H" server reload-config >/dev/null 2>&1 || true
 }
 
-block() {
-  cat <<EOF
-$BEGIN (managed by the Sidekick plugin; remove with its statusbar-remove action)
-[ui]
-tab_bar_right = [
-  { type = "command", command = "sh '$RUN' board --status --state '$STATE'", interval_seconds = 5, timeout_seconds = 4 },
-]
+entry() {
+  echo "  { type = \"command\", command = \"sh '$RUN' board --status --state '$STATE'\", interval_seconds = 5, timeout_seconds = 4 },"
+}
 
-[ui.sidebar.spaces]
-rows = [["state_icon", "workspace"], ["branch", "git_status"], [{ token = "\$wt_pr", fg = "#c678dd" }]]
-$END
-EOF
+spaces_rows() {
+  echo 'rows = [["state_icon", "workspace"], ["branch", "git_status"], [{ token = "$wt_pr", fg = "#c678dd" }]]'
+}
+
+# $1 wrapped in marker lines. Markers sit at column 0 so without_block finds them, even when the
+# block is a single entry inside the user's own tab_bar_right array (comments are legal there).
+marked() {
+  printf '%s\n%s\n%s\n' "$BEGIN (managed by the Sidekick plugin; remove with its statusbar-remove action)" "$1" "$END"
+}
+
+# stdin with $INSERT printed after the first line matching the ERE $1.
+insert_after() {
+  # Both go through ENVIRON: awk -v would eat the backslashes in `\[ui\]`.
+  RE=$1 INSERT=$2 awk '{ print } !done && $0 ~ ENVIRON["RE"] { print ENVIRON["INSERT"]; done = 1 }'
+}
+
+# The user's config with our lines merged in. TOML forbids defining a table or key twice, so
+# instead of appending a second [ui] we add our entry to their tab_bar_right array, or our key
+# to their [ui] table, and only append [ui] when they have none.
+merged() {
+  local rest=$1 out tbr
+  tbr=$(grep -E '^[[:space:]]*tab_bar_right[[:space:]]*=' <<<"$rest" || true)
+  if [ -n "$tbr" ]; then
+    # A multi-line array (`tab_bar_right = [` alone on its line) takes one more entry line.
+    if ! grep -Eq '=[[:space:]]*\[[[:space:]]*(#.*)?$' <<<"$tbr"; then
+      return 1
+    fi
+    out=$(insert_after '^[[:space:]]*tab_bar_right[[:space:]]*=' "$(marked "$(entry)")" <<<"$rest")
+  elif grep -Eq '^[[:space:]]*\[ui\][[:space:]]*(#.*)?$' <<<"$rest"; then
+    out=$(insert_after '^[[:space:]]*\[ui\][[:space:]]*(#.*)?$' \
+      "$(marked "tab_bar_right = ["$'\n'"$(entry)"$'\n'"]")" <<<"$rest")
+  else
+    out="${rest%$'\n'}"$'\n\n'"$(marked "[ui]"$'\n'"tab_bar_right = ["$'\n'"$(entry)"$'\n'"]")"
+  fi
+  # The PR row needs Space rows of its own; a user-defined [ui.sidebar.spaces] wins.
+  if ! grep -Eq '^[[:space:]]*\[ui\.sidebar\.spaces\]' <<<"$rest"; then
+    out="${out%$'\n'}"$'\n\n'"$(marked "[ui.sidebar.spaces]"$'\n'"$(spaces_rows)")"
+  fi
+  printf '%s\n' "$out"
 }
 
 install() {
@@ -64,16 +95,20 @@ install() {
     say "sidekick binary missing: run 'sh scripts/build.sh' in $ROOT"
     exit 1
   fi
-  local rest
+  local rest next
   rest=$(without_block)
-  # TOML forbids defining a table twice; merging into a user's own [ui] is left to them.
-  if grep -Eq '^[[:space:]]*(\[ui\]|\[ui\.sidebar\.spaces\]|ui\.|tab_bar_right[[:space:]]*=)' <<<"$rest"; then
-    say "config.toml already has its own [ui] settings; add the snippet from the plugin log by hand"
-    block
+  # Root-level dotted keys (`ui.x = ...`) define [ui] in a way no merge can extend.
+  if grep -Eq '^[[:space:]]*ui\.' <<<"$rest" || ! next=$(merged "$rest"); then
+    say "config.toml defines [ui] in a form Sidekick cannot merge into (dotted ui.* keys or a one-line tab_bar_right); add this entry to tab_bar_right by hand"
+    entry
     exit 1
   fi
-  commit "${rest%$'\n'}"$'\n\n'"$(block)"
-  say "tab-bar summary and sidebar PR row added"
+  commit "${next%$'\n'}"
+  if grep -Eq '^[[:space:]]*\[ui\.sidebar\.spaces\]' <<<"$rest"; then
+    say "tab-bar summary added; your own [ui.sidebar.spaces] rows are kept, add [{ token = \"\$wt_pr\" }] there for the PR row"
+  else
+    say "tab-bar summary and sidebar PR row added"
+  fi
 }
 
 remove() {

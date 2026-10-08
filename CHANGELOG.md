@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1
+
+- **Sidekick: add tab-bar summary** now merges into a config.toml that already has its own `[ui]`
+  instead of refusing: it adds its entry to an existing multi-line `tab_bar_right` array, or its
+  key to the existing `[ui]` table, and keeps a user-defined `[ui.sidebar.spaces]`. Remove still
+  takes out exactly what install added. A one-line `tab_bar_right` or dotted `ui.*` keys are still
+  left for you to edit by hand.
+- Worktree board: a pane `display_agent` that only mirrors the terminal title (reported so herdr
+  shows the task on pane borders) no longer replaces the agent name, so cards stop printing the
+  title twice.
+
 ## 0.2.0
 
 - Agents panel: each subagent shows its model and reasoning effort (e.g. `opus-5-5 · high`) on

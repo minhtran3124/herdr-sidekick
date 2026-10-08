@@ -14,8 +14,8 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default)]
 pub struct Agent {
     pub status: String,
-    /// Which coding agent: herdr's `display_agent` when a pane reports one, else its canonical id
-    /// (`claude`, `codex`, `pi`, `opencode`, ...).
+    /// Which coding agent: herdr's `display_agent` when a pane reports one (unless it just mirrors
+    /// the terminal title), else its canonical id (`claude`, `codex`, `pi`, `opencode`, ...).
     pub name: String,
     pub title: String,
 }
@@ -127,14 +127,17 @@ pub fn herdr_snapshot(ws: &str) -> HerdrSnap {
         .filter(|p| p["agent"].is_string())
         .map(|p| {
             let cwd = p["foreground_cwd"].as_str().or(p["cwd"].as_str()).unwrap_or_default().to_string();
+            let title = s(p, "terminal_title_stripped");
             let agent = Agent {
                 status: p["agent_status"].as_str().unwrap_or("unknown").into(),
+                // A display_agent that mirrors the terminal title (reported so herdr shows the
+                // task on pane borders) is not an agent name; the card would print it twice.
                 name: p["display_agent"]
                     .as_str()
-                    .filter(|d| !d.is_empty())
+                    .filter(|d| !d.is_empty() && *d != title)
                     .map(String::from)
                     .unwrap_or_else(|| s(p, "agent")),
-                title: s(p, "terminal_title_stripped"),
+                title,
             };
             (cwd, agent)
         })
