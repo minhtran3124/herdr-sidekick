@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Agents panel: keeps listing subagents after Claude Code enters a worktree mid-session. Claude
   Code then moves the session's transcripts to the worktree's project directory; the panel kept
