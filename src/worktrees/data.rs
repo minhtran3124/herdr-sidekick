@@ -104,6 +104,18 @@ fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
+/// A pane's `display_agent`, else its canonical agent id. A display_agent that mirrors the
+/// terminal title (reported so herdr shows the task on pane borders) is not a name: the card
+/// would print the title twice.
+fn agent_name(p: &Value) -> String {
+    let title = s(p, "terminal_title_stripped");
+    p["display_agent"]
+        .as_str()
+        .filter(|d| !d.is_empty() && *d != title)
+        .map(String::from)
+        .unwrap_or_else(|| s(p, "agent"))
+}
+
 pub fn herdr_snapshot(ws: &str) -> HerdrSnap {
     let Some(wt) = herdr_json(&["worktree", "list", "--workspace", ws]) else {
         return HerdrSnap { error: Some("not a git workspace".into()), ..Default::default() };
@@ -127,17 +139,10 @@ pub fn herdr_snapshot(ws: &str) -> HerdrSnap {
         .filter(|p| p["agent"].is_string())
         .map(|p| {
             let cwd = p["foreground_cwd"].as_str().or(p["cwd"].as_str()).unwrap_or_default().to_string();
-            let title = s(p, "terminal_title_stripped");
             let agent = Agent {
                 status: p["agent_status"].as_str().unwrap_or("unknown").into(),
-                // A display_agent that mirrors the terminal title (reported so herdr shows the
-                // task on pane borders) is not an agent name; the card would print it twice.
-                name: p["display_agent"]
-                    .as_str()
-                    .filter(|d| !d.is_empty() && *d != title)
-                    .map(String::from)
-                    .unwrap_or_else(|| s(p, "agent")),
-                title,
+                name: agent_name(p),
+                title: s(p, "terminal_title_stripped"),
             };
             (cwd, agent)
         })
@@ -266,4 +271,21 @@ pub fn spawn_pr(slug: String, cache: PathBuf, gh: String, tx: Sender<Msg>, kick:
 
 fn touch(p: &PathBuf) -> std::io::Result<()> {
     std::fs::File::options().create(true).append(true).open(p)?.set_modified(SystemTime::now())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_name;
+    use serde_json::json;
+
+    #[test]
+    fn agent_name_skips_a_display_agent_that_mirrors_the_title() {
+        let pane = |display: Option<&str>| {
+            json!({"agent": "claude", "display_agent": display, "terminal_title_stripped": "Fix login"})
+        };
+        assert_eq!(agent_name(&pane(None)), "claude");
+        assert_eq!(agent_name(&pane(Some(""))), "claude");
+        assert_eq!(agent_name(&pane(Some("Fix login"))), "claude");
+        assert_eq!(agent_name(&pane(Some("droid-pro"))), "droid-pro");
+    }
 }
