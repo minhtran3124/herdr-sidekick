@@ -12,8 +12,9 @@ Side panels for [herdr](https://herdr.dev) when you run coding agents in paralle
   counts. Click a file for a full-file diff.
 - **◈ agents**: the Claude Code subagents of the focused Claude pane, split into NEEDS YOU
   (approval, reported BLOCKED, failed), RUNNING and FINISHED. Each running subagent gets its live
-  transcript as a pane next to your Claude pane, opened on its own; the panes are re-tiled as a
-  grid that fits their count (6 → 3×2, 12 → 3×4) and close 3s after their agent finishes.
+  transcript as a pane next to your Claude pane, opened on its own; your Claude pane and the
+  agent panes are re-tiled as one grid of equal cells that fits their count (main + 5 agents →
+  3×2), and agent panes close 3s after their agent finishes.
   FINISHED shows the 3 newest until you expand it; click a section header to fold it. herdr
   notifies you when an agent needs you, in any workspace.
 - **Open file**: type a path in the repo, fuzzy like Ctrl+P (`aiapi` finds

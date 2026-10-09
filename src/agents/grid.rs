@@ -37,6 +37,23 @@ pub fn keep_ratio(k: usize, i: usize) -> f64 {
     1.0 / (k - i + 1) as f64
 }
 
+/// Width and height of the box around `rects` ([x, y, w, h] each).
+pub fn bounds(rects: &[[u16; 4]]) -> (u16, u16) {
+    let x0 = rects.iter().map(|r| r[0]).min().unwrap_or(0);
+    let y0 = rects.iter().map(|r| r[1]).min().unwrap_or(0);
+    let x1 = rects.iter().map(|r| r[0] + r[2]).max().unwrap_or(0);
+    let y1 = rects.iter().map(|r| r[1] + r[3]).max().unwrap_or(0);
+    (x1 - x0, y1 - y0)
+}
+
+/// The box's size when `rects` tile it, None when something else takes part of it. Pane
+/// borders and rounded splits can leave a few cells uncounted, hence the 5% slack.
+pub fn tiled(rects: &[[u16; 4]]) -> Option<(u16, u16)> {
+    let (w, h) = bounds(rects);
+    let covered: usize = rects.iter().map(|r| r[2] as usize * r[3] as usize).sum();
+    (covered * 100 >= w as usize * h as usize * 95).then_some((w, h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,5 +89,15 @@ mod tests {
         let first = w * keep_ratio(3, 1);
         let second = (w - first) * keep_ratio(3, 2);
         assert_eq!((first, second, w - first - second), (100.0, 100.0, 100.0));
+    }
+
+    #[test]
+    fn main_and_agents_tile_their_box_unless_a_panel_sits_among_them() {
+        let main = [0, 0, 100, 60];
+        let agents = [[100, 0, 100, 30], [100, 30, 100, 30]];
+        assert_eq!(tiled(&[main, agents[0], agents[1]]), Some((200, 60)));
+        // A side panel below the first agent: main and the agents leave a hole.
+        assert_eq!(tiled(&[main, agents[0]]), None);
+        assert_eq!(bounds(&agents), (100, 60));
     }
 }

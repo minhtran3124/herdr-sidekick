@@ -59,6 +59,8 @@ struct Snap {
     groups: HashMap<String, String>,
     /// Labels of agent panes open in this tab.
     open: HashSet<String>,
+    /// Pane id of the Claude pane the agents came from; it takes a grid cell like any agent.
+    main: String,
 }
 
 pub struct List {
@@ -71,6 +73,7 @@ pub struct List {
     agents: Vec<Agent>,
     groups: HashMap<String, String>,
     open: HashSet<String>,
+    main: String,
     /// A short footer message (e.g. why a pane did not open), shown for FLASH.
     flash: Option<(String, std::time::Instant)>,
     /// Open a pane for each newly started agent (`o` toggles, remembered in the state dir).
@@ -105,6 +108,7 @@ impl List {
             agents: Vec::new(),
             groups: HashMap::new(),
             open: HashSet::new(),
+            main: String::new(),
             flash: None,
             auto: !state_file("auto-off").is_some_and(|p| p.exists()),
             auto_done: HashSet::new(),
@@ -148,6 +152,7 @@ impl List {
         self.all = snap.agents;
         self.groups = snap.groups;
         self.open = snap.open;
+        self.main = snap.main;
         self.rebuild();
         self.auto_open();
         let settled = self.opened_at.is_none_or(|t| t.elapsed() >= AUTO_GAP) && !self.closing_soon(data::now_ms());
@@ -164,12 +169,13 @@ impl List {
         })
     }
 
-    /// Lays the agent panes out as the grid that fits their count (grid.rs), oldest top-left.
+    /// Lays the main Claude pane and its agent panes out as one grid of equal cells that fits
+    /// their count (grid.rs): main top-left, then agents oldest first.
     /// Remembers the panes it actually laid out: a pane that has not labelled itself yet (its
     /// process is still starting) is missed now and picked up by the next scan.
     fn regrid(&mut self) {
         let order: HashMap<String, i64> = self.all.iter().map(|a| (a.pane_key(), a.start_ms)).collect();
-        self.gridded = regrid_panes(&order);
+        self.gridded = regrid_panes(&self.main, &order);
     }
 
     /// Subagents from earlier runs of a resumed session, hidden unless `p` shows them.
@@ -315,7 +321,7 @@ impl List {
             if self.open.contains(&label) {
                 return;
             }
-            let room = agent_area().is_none_or(|(_, (w, h))| grid::choose(self.open.len() + 1, w, h).is_some());
+            let room = agent_area(&self.main).is_none_or(|(cells, (w, h))| grid::choose(cells.len() + 1, w, h).is_some());
             if !room {
                 // No room for one more readable pane: the agent that finished longest ago makes
                 // room; one that needs the user (blocked, failed) only when every finished pane
@@ -660,10 +666,10 @@ fn open_agent_panes(all: &[serde_json::Value]) -> HashSet<String> {
     panes.iter().filter(|p| is_agent_pane(p)).filter_map(|p| p["label"].as_str().map(|l| data::pane_key(l).to_string())).collect()
 }
 
-/// Main + stack: the first agent pane splits the largest work pane (the main Claude pane) to the
-/// right; later ones split only the largest agent pane, along its long side, so the main pane
-/// keeps the left half and agents tile the right half (down, right, right → 2×2). Terminal
-/// cells are about twice as tall as wide, hence 2.2.
+/// The first agent pane splits the largest work pane (the main Claude pane) to the right; later
+/// ones split the largest agent pane along its long side. That is only a first placement: the
+/// re-grid then gives main and every agent an equal cell. Terminal cells are about twice as
+/// tall as wide, hence 2.2.
 fn open_pane(a: &Agent) {
     let Some((panes, me)) = tab_panes() else { return };
     let Ok(bin) = std::env::var("HERDR_BIN_PATH") else { return };
@@ -702,11 +708,14 @@ fn open_pane(a: &Agent) {
     let _ = cmd.status();
 }
 
-/// An agent pane: (pane id, label, [x, y, w, h]).
+/// A grid cell: (pane id, label, [x, y, w, h]). The main pane's label is empty.
 type AgentPane = (String, String, [u16; 4]);
 
-/// This tab's agent panes and the size of the area they cover.
-fn agent_area() -> Option<(Vec<AgentPane>, (u16, u16))> {
+/// The grid's cells and the size of the area they cover: the main pane first, then this tab's
+/// agent panes. Main joins only while its cells and the agents' tile one rectangle (nothing
+/// else, such as a side panel, sits among them); else the agents are gridded on their own.
+/// None when no agent pane is open.
+fn agent_area(main: &str) -> Option<(Vec<AgentPane>, (u16, u16))> {
     let (panes, me) = tab_panes()?;
     let labels: HashMap<&str, &str> = panes
         .iter()
@@ -715,23 +724,30 @@ fn agent_area() -> Option<(Vec<AgentPane>, (u16, u16))> {
         .collect();
     let layout = herdr_json(&["pane", "layout", "--pane", &me])?;
     let n = |v: &serde_json::Value| v.as_u64().unwrap_or(0) as u16;
-    let found: Vec<AgentPane> = layout["result"]["layout"]["panes"]
-        .as_array()?
-        .iter()
-        .filter_map(|p| {
-            let id = p["pane_id"].as_str()?;
-            let r = &p["rect"];
-            Some((id.to_string(), labels.get(id)?.to_string(), [n(&r["x"]), n(&r["y"]), n(&r["width"]), n(&r["height"])]))
-        })
-        .collect();
+    let mut main_cell = None;
+    let mut found: Vec<AgentPane> = Vec::new();
+    for p in layout["result"]["layout"]["panes"].as_array()? {
+        let Some(id) = p["pane_id"].as_str() else { continue };
+        let r = &p["rect"];
+        let rect = [n(&r["x"]), n(&r["y"]), n(&r["width"]), n(&r["height"])];
+        if let Some(l) = labels.get(id) {
+            found.push((id.to_string(), l.to_string(), rect));
+        } else if !main.is_empty() && id == main {
+            main_cell = Some((id.to_string(), String::new(), rect));
+        }
+    }
     if found.is_empty() {
         return None;
     }
-    let x0 = found.iter().map(|p| p.2[0]).min()?;
-    let y0 = found.iter().map(|p| p.2[1]).min()?;
-    let x1 = found.iter().map(|p| p.2[0] + p.2[2]).max()?;
-    let y1 = found.iter().map(|p| p.2[1] + p.2[3]).max()?;
-    Some((found, (x1 - x0, y1 - y0)))
+    if let Some(m) = main_cell {
+        let mut with_main = vec![m];
+        with_main.extend(found.iter().cloned());
+        if let Some(size) = grid::tiled(&with_main.iter().map(|c| c.2).collect::<Vec<_>>()) {
+            return Some((with_main, size));
+        }
+    }
+    let size = grid::bounds(&found.iter().map(|c| c.2).collect::<Vec<_>>());
+    Some((found, size))
 }
 
 fn herdr_json(args: &[&str]) -> Option<serde_json::Value> {
@@ -740,19 +756,22 @@ fn herdr_json(args: &[&str]) -> Option<serde_json::Value> {
     serde_json::from_slice(&out.stdout).ok()
 }
 
-/// Re-tiles this tab's agent panes as grid::choose's grid, row-major by `order` (agent start).
-/// herdr has no "set layout": the anchor (oldest) stays, the others park in a hidden tab so the
-/// anchor fills the whole area, then each moves back split off its neighbour at the ratio that
-/// makes equal parts. `pane move` keeps the transcript process; nothing restarts. Skipped when
-/// the panes already sit in that grid, so a scan with the same panes costs one layout read.
-fn regrid_panes(order: &HashMap<String, i64>) -> HashSet<String> {
-    let Some((mut panes, (w, h))) = agent_area() else { return HashSet::new() };
-    let seen: HashSet<String> = panes.iter().map(|p| p.1.clone()).collect();
+/// Re-tiles the main pane and this tab's agent panes as grid::choose's grid of equal cells,
+/// row-major: main first, then agents by `order` (agent start). herdr has no "set layout": the
+/// anchor (main, or the oldest agent when main is not in the grid) stays, the others park in a
+/// hidden tab so the anchor fills the whole area, then each moves back split off its neighbour
+/// at the ratio that makes equal parts. `pane move` keeps the transcript process; nothing
+/// restarts. Skipped when the panes already sit in that grid, so a scan with the same panes
+/// costs one layout read. Returns the agent pane labels it saw.
+fn regrid_panes(main: &str, order: &HashMap<String, i64>) -> HashSet<String> {
+    let Some((mut panes, (w, h))) = agent_area(main) else { return HashSet::new() };
+    let seen: HashSet<String> = panes.iter().filter(|p| !p.1.is_empty()).map(|p| p.1.clone()).collect();
     let (n, Some(tab)) = (panes.len(), tab_panes().and_then(|(p, me)| crate::tui::tab_of(&p, &me).and_then(|t| t.as_str().map(String::from)))) else { return seen };
     if n < 2 {
         return seen;
     }
-    panes.sort_by_key(|p| (order.get(&p.1).copied().unwrap_or(i64::MAX), p.1.clone()));
+    // The main cell's empty label sorts it first.
+    panes.sort_by_key(|p| (!p.1.is_empty(), order.get(&p.1).copied().unwrap_or(i64::MAX), p.1.clone()));
     let Some((cols, _)) = grid::choose(n, w, h) else { return seen };
     let plan = grid::columns(n, cols);
     let (x0, y0) = (panes.iter().map(|p| p.2[0]).min().unwrap_or(0), panes.iter().map(|p| p.2[1]).min().unwrap_or(0));
@@ -925,7 +944,7 @@ fn spawn() -> (Receiver<Snap>, Sender<()>) {
             if !open.is_empty() {
                 mark_main(&main_pane, &name);
             }
-            let snap = Snap { session: session.clone(), name: name.clone(), since, agents: agents.clone(), groups: groups.clone(), open };
+            let snap = Snap { session: session.clone(), name: name.clone(), since, agents: agents.clone(), groups: groups.clone(), open, main: main_pane.clone() };
             if tx.send(snap).is_err() {
                 return;
             }
