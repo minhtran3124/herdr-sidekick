@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Panels come back after herdr restarts. herdr restores every pane as a plain shell but keeps its
+  label, so a tab looked like it still had its agents panel (and worktrees / changes panels) and
+  never opened a new one: subagents stopped showing until the pane was closed by hand. Opening
+  panels now closes labelled panes that no longer run sidekick, then reopens what applies.
+
 ## 0.2.2
 
 - Agents panel: keeps listing subagents after Claude Code enters a worktree mid-session. Claude
