@@ -1,6 +1,6 @@
 id = "minhtran3124.sidekick"
 name = "Sidekick"
-version = "0.2.4"
+version = "0.2.5"
 min_herdr_version = "0.9.1"
 description = "Side panels for coding agents: worktrees, changed files with diffs, and Claude Code subagents"
 platforms = ["linux", "macos"]

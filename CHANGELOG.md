@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.5
 
 - Agents panel: the main Claude pane and its subagent panes now share one grid of equal cells,
   main top-left. Before, main kept half the area and every subagent was squeezed into the other
