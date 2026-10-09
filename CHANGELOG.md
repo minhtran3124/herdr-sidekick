@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Panels open on systems whose locale uses a decimal comma (e.g. vi_VN). The width ratio for a new
+  panel was printed as `0,8275`, which herdr rejects (`invalid ratio`), so the panel opened at the
+  wrong size or not through the sized path.
+
 ## 0.2.3
 
 - Panels come back after herdr restarts. herdr restores every pane as a plain shell but keeps its

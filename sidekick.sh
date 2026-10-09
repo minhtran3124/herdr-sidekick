@@ -94,7 +94,7 @@ slot() { # pane cols -> placeholder pane id
   local w ratio
   w=$(width "$1") || return 1
   ((w > $2 + 10)) || return 1
-  ratio=$(awk -v w="$w" -v c="$2" 'BEGIN { printf "%.4f", (w - c) / w }')
+  ratio=$(LC_ALL=C awk -v w="$w" -v c="$2" 'BEGIN { printf "%.4f", (w - c) / w }')
   "$H" pane split --pane "$1" --direction right --ratio "$ratio" --no-focus | jq -er '.result.pane.pane_id'
 }
 
