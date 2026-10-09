@@ -191,11 +191,29 @@ applies() { # panel ws tab cwd
   esac
 }
 
+# A herdr restart restores every pane as a plain shell but keeps its label, so a panel or agent
+# pane looks present while nothing runs in it, and its panel never reopens. Close those; the
+# panel is then missing and opens again below. A pane just opened still runs `sh …/run.sh`, and
+# a herdr without process-info (or one that fails) keeps the pane.
+close_dead() { # tab
+  local id fg closed=""
+  for id in $(jq -r --arg t "$1" ".result.panes[] | select(.tab_id == \$t and ($(is_side))) | .pane_id" <<<"$PANES"); do
+    fg=$("$H" pane process-info --pane "$id" 2>/dev/null |
+      jq -r '[.result.process_info.foreground_processes[]?.cmdline] | join("\n")') || continue
+    [ -n "$fg" ] || continue
+    grep -qE 'sidekick|run\.sh' <<<"$fg" && continue
+    close_pane "$id"
+    closed=1
+  done
+  [ -z "$closed" ] || refresh
+}
+
 # Panels that should open in the active tab: missing there, not hidden, and applying.
 ensure() {
   local ws tab cwd p f t want=""
   read -r ws tab < <(active) || return 0
   [ -n "$tab" ] || return 0
+  close_dead "$tab"
   cwd=$(tab_cwd "$tab" "$ws")
   # `q` flags of tabs that no longer exist.
   for f in "$STATE"/closed-*; do
