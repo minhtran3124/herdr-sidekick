@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.4
 
 - Panels open on systems whose locale uses a decimal comma (e.g. vi_VN). The width ratio for a new
   panel was printed as `0,8275`, which herdr rejects (`invalid ratio`), so the panel opened at the
