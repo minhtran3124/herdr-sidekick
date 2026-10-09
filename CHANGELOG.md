@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Agents panel: the main Claude pane and its subagent panes now share one grid of equal cells,
+  main top-left. Before, main kept half the area and every subagent was squeezed into the other
+  half. When something else (such as a side panel) sits among them, only the agent panes are
+  gridded, as before.
+
 ## 0.2.4
 
 - Panels open on systems whose locale uses a decimal comma (e.g. vi_VN). The width ratio for a new
