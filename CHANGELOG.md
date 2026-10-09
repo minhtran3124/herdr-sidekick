@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3
 
 - Panels come back after herdr restarts. herdr restores every pane as a plain shell but keeps its
   label, so a tab looked like it still had its agents panel (and worktrees / changes panels) and
