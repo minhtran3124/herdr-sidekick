@@ -154,7 +154,7 @@ restarts; the header shows how many.
 ## Settings
 
 Copy `config.env.example` to `$(herdr plugin config-dir minhtran3124.sidekick)/config.env`.
-Widths, the worktree threshold, plain icons, the `gh` path and the Claude config dir can be
+Widths, the worktree threshold, subagent split panes (`AGENTS_AUTO_OPEN=off` to stop them opening by themselves), plain icons, the `gh` path and the Claude config dir can be
 changed there.
 
 ## Notes

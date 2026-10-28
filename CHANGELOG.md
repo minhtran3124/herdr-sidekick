@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `AGENTS_AUTO_OPEN=off` in config.env stops subagents from opening split panes on their own. The agents
+  panel still lists them, and Enter opens one on demand.
+
 ## 0.2.5
 
 - Agents panel: the main Claude pane and its subagent panes now share one grid of equal cells,

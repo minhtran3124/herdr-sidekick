@@ -110,7 +110,7 @@ impl List {
             open: HashSet::new(),
             main: String::new(),
             flash: None,
-            auto: !state_file("auto-off").is_some_and(|p| p.exists()),
+            auto: auto_open_allowed() && !state_file("auto-off").is_some_and(|p| p.exists()),
             auto_done: HashSet::new(),
             gridded: HashSet::new(),
             opened_at: None,
@@ -402,6 +402,9 @@ impl List {
                         self.peek(i);
                     }
                 }
+                KeyCode::Char('o') if !auto_open_allowed() => {
+                    self.flash = Some(("auto-open is off: AGENTS_AUTO_OPEN=off in config.env".to_string(), std::time::Instant::now()));
+                }
                 KeyCode::Char('o') => {
                     self.auto = !self.auto;
                     if let Some(p) = state_file("auto-off") {
@@ -659,6 +662,12 @@ fn tab_panes() -> Option<(Vec<serde_json::Value>, String)> {
 
 fn is_agent_pane(p: &serde_json::Value) -> bool {
     p["label"].as_str().is_some_and(|l| l.starts_with(data::PANE_PREFIX))
+}
+
+/// `AGENTS_AUTO_OPEN=off` (config.env) stops subagents from opening split panes by themselves;
+/// `↵` still opens one on demand.
+fn auto_open_allowed() -> bool {
+    !matches!(std::env::var("AGENTS_AUTO_OPEN").as_deref(), Ok("off" | "0" | "false" | "no"))
 }
 
 fn open_agent_panes(all: &[serde_json::Value]) -> HashSet<String> {
