@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.6
 
 - `AGENTS_AUTO_OPEN=off` in config.env stops subagents from opening split panes on their own. The agents
   panel still lists them, and Enter opens one on demand.
