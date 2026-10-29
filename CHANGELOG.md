@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.7
 
 - Notifications no longer poll. The panel that runs the all-workspace scan subscribes to herdr's
   `pane.agent_status_changed` for every Claude pane (resubscribing when panes appear, close or
