@@ -6,6 +6,7 @@
 //! Outside herdr, set AGENTS_SESSION=<session id> to pick the session for the list.
 
 mod data;
+mod events;
 mod grid;
 mod list;
 mod notify;
@@ -89,6 +90,8 @@ pub fn view_main(mut args: Vec<String>) -> std::io::Result<()> {
 }
 
 pub fn notify_main() -> std::io::Result<()> {
-    notify::run_once();
+    if notify::event_matters() {
+        notify::run_once();
+    }
     Ok(())
 }

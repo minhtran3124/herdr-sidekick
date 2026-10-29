@@ -11,21 +11,26 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::data::{self, Agent, Scanner, Section, Status};
+use super::events::Feed;
 
 /// Only transcripts written this recently are read or reported; older trouble is history.
 const RECENT_MS: i64 = 10 * 60 * 1000;
 const KEEP_MARKERS_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-const GLOBAL_EVERY: Duration = Duration::from_secs(5);
+/// Scan period without a live event feed (herdr gone or not answering).
+const GLOBAL_EVERY: Duration = Duration::from_secs(15);
+/// Backstop while the feed is live: it announces every Claude state change, so this only covers
+/// what no event carries (a transcript going quiet).
+const FEED_EVERY: Duration = Duration::from_secs(60);
 /// Markers live for days, so sweeping them once an hour is as good as every scan.
 const PRUNE_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// herdr fires pane.agent_status_changed too rarely to rely on (0.9.1), and plugins get no
-/// daemon, so the open panels host the all-workspace scan: the one holding the lock runs it, and
+/// Plugins get no daemon, so the open panels host the all-workspace scan: the one holding the lock runs it, and
 /// when that panel closes the lock frees and another panel takes over.
 #[derive(Default)]
 pub struct Notifier {
     lock: Option<File>,
     last: Option<Instant>,
+    feed: Option<Feed>,
     pruned: Option<Instant>,
     scanners: HashMap<String, Scanner>,
     sessions: data::Sessions,
@@ -33,12 +38,17 @@ pub struct Notifier {
 
 impl Notifier {
     pub fn tick(&mut self) {
-        if self.last.is_some_and(|t| t.elapsed() < GLOBAL_EVERY) {
+        let changed = self.feed.as_ref().is_some_and(Feed::take);
+        let every = if self.feed.as_ref().is_some_and(Feed::live) { FEED_EVERY } else { GLOBAL_EVERY };
+        if !changed && self.last.is_some_and(|t| t.elapsed() < every) {
             return;
         }
         self.last = Some(Instant::now());
         if self.lock.is_none() {
             self.lock = take_lock();
+            if self.lock.is_some() {
+                self.feed = Feed::start();
+            }
         }
         if self.lock.is_some() {
             run_all(&mut self.scanners, &mut self.sessions);
@@ -102,7 +112,20 @@ pub fn run_all(scanners: &mut HashMap<String, Scanner>, sessions: &mut data::Ses
     scanners.retain(|sid, _| live.contains(sid));
 }
 
-/// `agents notify` (hooks): one pass, then sweep old markers.
+/// Whether the hook's event can change what needs a notification: a status change of an agent
+/// other than Claude cannot. Anything unreadable counts as relevant.
+pub fn event_matters() -> bool {
+    matters(std::env::var("HERDR_PLUGIN_EVENT_JSON").ok().as_deref())
+}
+
+fn matters(json: Option<&str>) -> bool {
+    let Some(ev) = json.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok()) else { return true };
+    let agent = &ev["data"]["agent"];
+    ev["data"]["type"] != "pane_agent_status_changed" || !agent.is_string() || agent == "claude"
+}
+
+/// `agents notify` (hooks): one pass, then sweep old markers. Runs even while a panel holds the
+/// lock: that panel's feed may be reconnecting, and markers keep a notification to one.
 pub fn run_once() {
     run_all(&mut HashMap::new(), &mut data::Sessions::default());
     prune();
@@ -131,4 +154,23 @@ fn show(title: &str, body: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matters;
+
+    fn status(agent: &str) -> String {
+        format!(r#"{{"event":"pane_agent_status_changed","data":{{"type":"pane_agent_status_changed","pane_id":"w1:p1","agent":{agent}}}}}"#)
+    }
+
+    #[test]
+    fn only_other_agents_status_changes_are_skipped() {
+        assert!(matters(Some(&status(r#""claude""#))));
+        assert!(!matters(Some(&status(r#""codex""#))));
+        assert!(matters(Some(&status("null"))));
+        assert!(matters(Some(r#"{"event":"workspace_focused","data":{"type":"workspace_focused"}}"#)));
+        assert!(matters(Some("not json")));
+        assert!(matters(None));
+    }
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Notifications no longer poll. The panel that runs the all-workspace scan subscribes to herdr's
+  `pane.agent_status_changed` for every Claude pane (resubscribing when panes appear, close or
+  turn into agents) and scans on each event; the timer drops to a 60 s backstop while the feed is
+  live, and to 15 s (was 5 s) when it is not.
+- The `ensure` and `notify` hooks exit early on status changes of agents other than Claude, using
+  `HERDR_PLUGIN_EVENT_JSON`, instead of starting a process that finds nothing to do.
+
 ## 0.2.6
 
 - `AGENTS_AUTO_OPEN=off` in config.env stops subagents from opening split panes on their own. The agents
