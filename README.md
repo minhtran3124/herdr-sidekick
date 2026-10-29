@@ -32,6 +32,7 @@ herdr plugin install minhtran3124/herdr-sidekick
 
 The install downloads a prebuilt binary for macOS (Apple Silicon, Intel) or Linux (x86_64,
 arm64). Without one it builds from source, which needs [Rust](https://rustup.rs).
+Update later with `herdr plugin update` (herdr 0.9.4+; a plugin added with `herdr plugin link` is left alone).
 
 Needs herdr 0.9.1+, `git`, `jq` and `bash`. Optional: `gh` (logged in) for PR status, Claude
 Code for the agents panel, a Nerd Font for file icons.

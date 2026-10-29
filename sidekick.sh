@@ -16,6 +16,12 @@ set -euo pipefail
 cfg="${HERDR_PLUGIN_CONFIG_DIR:-}/config.env"
 if [ -f "$cfg" ]; then set -a; . "$cfg"; set +a; fi
 
+# Status changes of other agents (Codex, shells) cannot change which panels apply.
+if [ "${1:-}" = ensure ] && [ "${HERDR_PLUGIN_EVENT:-}" = pane.agent_status_changed ] &&
+  jq -e '.data.agent | strings | select(. != "claude")' <<<"${HERDR_PLUGIN_EVENT_JSON:-}" >/dev/null 2>&1; then
+  exit 0
+fi
+
 H=${HERDR_BIN_PATH:-herdr}
 PLUGIN=${HERDR_PLUGIN_ID:-minhtran3124.sidekick}
 STATE=${HERDR_PLUGIN_STATE_DIR:?run from herdr}

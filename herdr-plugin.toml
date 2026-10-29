@@ -142,7 +142,7 @@ on = "pane.agent_status_changed"
 command = ["bash", "sidekick.sh", "ensure"]
 
 # Open agents panels also run the all-workspace notification scan; these hooks cover the time
-# when none is open. pane.agent_status_changed is rare on herdr 0.9.1, focus changes are not.
+# when none is open. The panels' own scan is only a slow backstop for missed events.
 [[events]]
 on = "pane.agent_status_changed"
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" notify"]
