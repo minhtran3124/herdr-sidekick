@@ -31,9 +31,12 @@ impl Feed {
         let feed = Feed { changed: Arc::default(), live: Arc::default() };
         let (changed, live) = (feed.changed.clone(), feed.live.clone());
         std::thread::spawn(move || loop {
-            follow(&socket, &changed, &live);
+            let resubscribe = follow(&socket, &changed, &live).is_some();
             live.store(false, Ordering::Relaxed);
-            std::thread::sleep(RETRY);
+            // A pane appearing or going is routine: reconnect at once. Only a failure waits.
+            if !resubscribe {
+                std::thread::sleep(RETRY);
+            }
         });
         Some(feed)
     }
@@ -49,6 +52,7 @@ impl Feed {
     }
 }
 
+/// Some: the pane set changed, subscribe again now. None: herdr refused, vanished or lagged.
 fn follow(socket: &OsString, changed: &AtomicBool, live: &AtomicBool) -> Option<()> {
     let mut subs: Vec<Value> = crate::tui::pane_list()?
         .iter()
@@ -73,7 +77,7 @@ fn follow(socket: &OsString, changed: &AtomicBool, live: &AtomicBool) -> Option<
         let Ok(v) = serde_json::from_str::<Value>(&line.ok()?) else { continue };
         changed.store(true, Ordering::Relaxed);
         if v["event"] != STATUS {
-            return None;
+            return Some(());
         }
     }
     None

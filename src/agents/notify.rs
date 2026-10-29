@@ -124,10 +124,9 @@ fn matters(json: Option<&str>) -> bool {
     ev["data"]["type"] != "pane_agent_status_changed" || !agent.is_string() || agent == "claude"
 }
 
-/// `agents notify` (hooks): one pass, then sweep old markers. An open panel holding the lock
-/// already scans on every event, so the hook leaves it to that panel.
+/// `agents notify` (hooks): one pass, then sweep old markers. Runs even while a panel holds the
+/// lock: that panel's feed may be reconnecting, and markers keep a notification to one.
 pub fn run_once() {
-    let Some(_lock) = take_lock() else { return };
     run_all(&mut HashMap::new(), &mut data::Sessions::default());
     prune();
 }
