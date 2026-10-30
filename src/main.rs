@@ -7,6 +7,7 @@ mod agents;
 mod changes;
 mod files;
 mod highlight;
+mod toolbar;
 mod tui;
 mod worktrees;
 
@@ -26,12 +27,13 @@ fn main() -> std::io::Result<()> {
         "view" => agents::view_main(args),
         "notify" => agents::notify_main(),
         "open" => files::open_main(args),
+        "toolbar" => toolbar::main(args),
         "--version" | "-V" => {
             println!("sidekick {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         _ => {
-            eprintln!("usage: sidekick <board|changes|diff|agents|view|notify|open> [--snapshot WxH]");
+            eprintln!("usage: sidekick <board|changes|diff|agents|view|notify|open|toolbar> [--snapshot WxH]");
             std::process::exit(2);
         }
     }

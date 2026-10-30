@@ -2,17 +2,17 @@
 state: active        # active | paused | blocked | done
 progress: 0          # rough estimate, 0-100
 priority: medium     # high | medium | low
-updated: 2026-10-24
+updated: 2026-10-29
 updated_by: claude   # claude | manual
 ---
 
 # herdr-sidekick — Status
 
 ## Summary
-herdr-sidekick, a Rust TUI companion for herdr, is at Release 0.2.5 (2026-10-09). Recent commits are small fixes to the agent grid layout, panel reopening after a herdr restart, and slot ratio locale formatting. Only STATUS.md is untracked.
+herdr-sidekick, a Rust TUI companion for herdr, is at Release 0.2.7 (2026-10-29). Latest work added the AGENTS_AUTO_OPEN config for subagent split panes and moved notifications to herdr events instead of polling. The working tree is clean.
 
 ## Next step
-Run 0.2.5 against real herdr sessions, then write down the next feature or bug to work on. Also check the version numbering, since the history has Release 0.3.0 before 0.2.2.
+Run 0.2.7 against real herdr sessions to check event-driven notifications and AGENTS_AUTO_OPEN, then pick the next feature or bug. Also check the odd 'Release 0.3.0' commit before 0.2.2.
 
 ## Blockers
 - (none)

@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use ratatui::crossterm::execute;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::{Frame, Terminal};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -27,7 +30,8 @@ pub trait Screen {
 
 /// Side panels and overlays, by pane label: never split, followed, or counted as work panes.
 /// ("Diff" and "Agent" are the manifest titles of the overlays.)
-pub const SIDE_LABELS: [&str; 5] = [crate::worktrees::LABEL, crate::changes::LABEL, crate::agents::LABEL, "Diff", "Agent"];
+pub const SIDE_LABELS: [&str; 6] =
+    [crate::worktrees::LABEL, crate::changes::LABEL, crate::agents::LABEL, crate::toolbar::LABEL, "Diff", "Agent"];
 
 pub fn plugin_id() -> String {
     std::env::var("HERDR_PLUGIN_ID").unwrap_or_else(|_| crate::PLUGIN_ID.into())
@@ -248,4 +252,109 @@ pub fn spread(mut left: Vec<Span<'static>>, right: Vec<Span<'static>>, w: usize)
     left.push(" ".repeat(w.saturating_sub(used)).into());
     left.extend(right);
     Line::from(left)
+}
+
+/// The panels a toolbar toggles: sidekick.sh name, icon, label.
+const PANELS: [(&str, &str, &str); 3] = [("worktrees", "⎇", "Worktrees"), ("changes", "±", "Changes"), ("agents", "◈", "Agents")];
+
+/// Chips, one per panel, lit while the panel is not hidden. A click runs
+/// `sidekick.sh toggle <panel>`, the same as the toggle actions in the command palette. One
+/// connected strip of icon-only chips.
+#[derive(Default)]
+pub struct Toolbar {
+    /// Chip rects -> panel, from the last render.
+    hits: Vec<(Rect, &'static str)>,
+}
+
+impl Toolbar {
+    fn style(name: &str) -> Style {
+        let tab = std::env::var("HERDR_TAB_ID").unwrap_or_default();
+        let off = |flag: String| state_file(&flag).is_some_and(|f| f.exists());
+        let on = !off(format!("disabled-{name}")) && !off(format!("closed-{name}-{tab}"));
+        if on {
+            Style::new().fg(Color::Black).bg(Color::Cyan).bold()
+        } else {
+            Style::new().fg(Color::DarkGray).bg(Color::Rgb(40, 40, 40))
+        }
+    }
+
+    /// Draws the chips in `area` and returns the rows and columns they took.
+    pub fn render(&mut self, buf: &mut Buffer, area: Rect) -> Rect {
+        self.hits.clear();
+        let icons: Vec<String> = PANELS.iter().map(|(_, i, _)| format!(" {i} ")).collect();
+        self.strip(buf, area, &icons)
+    }
+
+    fn strip(&mut self, buf: &mut Buffer, area: Rect, texts: &[String]) -> Rect {
+        let mut x = area.x + 1;
+        for (n, ((name, ..), text)) in PANELS.iter().zip(texts).enumerate() {
+            let cw = text.width() as u16;
+            if x + cw + u16::from(n > 0) > area.right() {
+                break;
+            }
+            if n > 0 {
+                buf.set_line(x, area.y, &Line::from(Span::styled("│", Style::new().fg(Color::DarkGray))), 1);
+                x += 1;
+            }
+            let r = Rect::new(x, area.y, cw, 1);
+            buf.set_line(x, area.y, &Line::from(Span::styled(text.clone(), Self::style(name))), cw);
+            self.hits.push((r, name));
+            x += cw;
+        }
+        Rect::new(area.x + 1, area.y, x.saturating_sub(area.x + 1), 1)
+    }
+
+    /// True when the click landed on a chip (the toggle is then running).
+    pub fn click(&self, col: u16, row: u16) -> bool {
+        let Some(name) = self.hit(col, row) else { return false };
+        toggle(name);
+        true
+    }
+
+    fn hit(&self, col: u16, row: u16) -> Option<&'static str> {
+        self.hits.iter().find(|(r, _)| r.contains(Position::new(col, row))).map(|(_, n)| *n)
+    }
+}
+
+/// Asks herdr to run the panel's toggle action. herdr runs it, not this pane: the script closes
+/// and reopens the toolbar, which must not take the script down with it.
+fn toggle(panel: &str) {
+    let Ok(bin) = std::env::var("HERDR_BIN_PATH") else { return };
+    let child = Command::new(bin)
+        .args(["plugin", "action", "invoke", &format!("toggle-{panel}"), "--plugin", &plugin_id()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        std::thread::spawn(move || child.wait());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar(w: u16, h: u16) -> Toolbar {
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        let mut bar = Toolbar::default();
+        bar.render(&mut buf, Rect::new(0, 0, w, h));
+        bar
+    }
+
+    #[test]
+    fn chips_are_one_icon_only_strip() {
+        let bar = bar(30, 5);
+        assert_eq!(bar.hits.len(), 3);
+        assert!(bar.hits.iter().all(|(r, _)| r.y == 0 && r.width == 3), "one row of icon chips");
+    }
+
+    #[test]
+    fn clicks_land_only_on_chips() {
+        let bar = bar(30, 5);
+        let r = bar.hits[1].0;
+        assert_eq!(bar.hit(r.x, r.y), Some("changes"));
+        assert_eq!(bar.hit(r.x, 4), None, "below the chips is not a chip");
+        assert_eq!(bar.hit(0, r.y), None, "the margin left of a chip is not a chip");
+    }
 }

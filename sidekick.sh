@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Places sidekick's side panels; each panel follows the focused pane by itself.
 # Usage: sidekick.sh ensure | toggle <panel> | off <panel> | restart | open [PATH[:LINE]]
-#        panel = worktrees | changes | agents
+#        panel = worktrees | changes | agents | toolbar
 #   ensure  (startup / focus / agent-status hooks) open each missing panel in the active tab when it
 #           applies, unless hidden: worktrees when the repo has >= WORKTREES_MIN checkouts, changes in
 #           a git checkout, agents once a Claude pane in the tab has spawned a subagent
@@ -26,14 +26,14 @@ H=${HERDR_BIN_PATH:-herdr}
 PLUGIN=${HERDR_PLUGIN_ID:-minhtran3124.sidekick}
 STATE=${HERDR_PLUGIN_STATE_DIR:?run from herdr}
 CLAUDE_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
-# Pane labels: must match the LABEL consts in src/{worktrees,changes,agents}/mod.rs, and "◇ "
+# Pane labels: must match the LABEL consts in src/{worktrees,changes,agents}/mod.rs and src/toolbar.rs, and "◇ "
 # below must match agents::data::PANE_PREFIX (agent transcript panes).
-BOARD="⎇ worktrees" CHANGES="± changes" AGENTS="◈ agents"
+BOARD="⎇ worktrees" CHANGES="± changes" AGENTS="◈ agents" TOOLBAR="▤ sidekick"
 MIN=${WORKTREES_MIN:-2}
 
-label_of() { case $1 in worktrees) echo "$BOARD" ;; changes) echo "$CHANGES" ;; agents) echo "$AGENTS" ;; *) return 1 ;; esac; }
+label_of() { case $1 in worktrees) echo "$BOARD" ;; changes) echo "$CHANGES" ;; agents) echo "$AGENTS" ;; toolbar) echo "$TOOLBAR" ;; *) return 1 ;; esac; }
 entry_of() { case $1 in worktrees) echo board ;; *) echo "$1" ;; esac; }
-width_of() { case $1 in worktrees) echo "${WORKTREES_WIDTH:-38}" ;; changes) echo "${CHANGES_WIDTH:-44}" ;; agents) echo "${AGENTS_WIDTH:-44}" ;; esac; }
+width_of() { case $1 in worktrees) echo "${WORKTREES_WIDTH:-38}" ;; changes) echo "${CHANGES_WIDTH:-44}" ;; agents) echo "${AGENTS_WIDTH:-44}" ;; toolbar) echo 0 ;; esac; }
 off_flag() { echo "$STATE/disabled-$1"; }
 closed_flag() { echo "$STATE/closed-$1-$2"; } # panel tab: `q` closed it in that tab only
 
@@ -56,7 +56,7 @@ in_tab() {
 }
 
 is_side() { # jq filter: side panels and agent panes, which panels never split or follow
-  echo '(.label // "") as $l | ($l == "'"$BOARD"'" or $l == "'"$CHANGES"'" or $l == "'"$AGENTS"'" or ($l | startswith("◇ ")))'
+  echo '(.label // "") as $l | ($l == "'"$BOARD"'" or $l == "'"$CHANGES"'" or $l == "'"$AGENTS"'" or $l == "'"$TOOLBAR"'" or ($l | startswith("◇ ")))'
 }
 
 # Directory of the pane the user works in: the tab's focused pane unless it is a side panel,
@@ -126,10 +126,71 @@ work_pane() {
     | (map(select(.focused)) + .)[0].pane_id // empty" <<<"$PANES"
 }
 
+# Rows the toolbar pane takes, frame included; herdr will not make a pane shorter than 7.
+TOOLBAR_ROWS=${TOOLBAR_ROWS:-7}
+
+pane_height() {
+  "$H" pane layout --pane "$1" | jq -er --arg id "$1" '.result.layout.panes[] | select(.pane_id == $id) | .rect.height'
+}
+
+toolbar_wanted() { # tab
+  [ ! -f "$(off_flag toolbar)" ] && [ ! -f "$(closed_flag toolbar "$1")" ]
+}
+
+# The toolbar goes under the rightmost panel (the board, else agents, else changes), so it takes
+# its rows from that column only; with no panel open it goes under the work pane.
+put_toolbar() { # tab cwd
+  local target="" h ratio ph p
+  [ -z "$(in_tab "$1" "$TOOLBAR")" ] || return 0
+  toolbar_wanted "$1" || return 0
+  for p in worktrees agents changes; do
+    target=$(in_tab "$1" "$(label_of "$p")" | head -n1)
+    [ -n "$target" ] && break
+  done
+  if [ -z "$target" ]; then
+    # No panel open: a bar under the work pane only when panels were hidden by hand, so a chip
+    # can bring them back. A tab where nothing applies keeps all its rows.
+    compgen -G "$STATE/disabled-*" >/dev/null || return 0
+    target=$(work_pane "$1")
+  fi
+  [ -n "$target" ] || return 0
+  h=$(pane_height "$target") || return 0
+  ((h > TOOLBAR_ROWS + 6)) || return 0
+  ratio=$(LC_ALL=C awk -v h="$h" -v c="$TOOLBAR_ROWS" 'BEGIN { printf "%.4f", (h - c) / h }')
+  ph=$("$H" pane split --pane "$target" --direction down --ratio "$ratio" --no-focus | jq -er '.result.pane.pane_id') || return 0
+  fill toolbar "$1" "$ph" "$2" || true
+  refresh
+}
+
+# Panels open and close around it, and herdr hands a closed pane's rows to its neighbour: take
+# the toolbar out before changing panels, and call settle_toolbar afterwards.
+drop_toolbar() { # tab
+  [ -n "$(in_tab "$1" "$TOOLBAR")" ] || return 0
+  close_in_tab "$1" toolbar
+  refresh
+}
+
+# Put the toolbar back under the right panel: missing, or grown tall after a panel closed.
+settle_toolbar() { # tab cwd
+  local id h
+  id=$(in_tab "$1" "$TOOLBAR" | head -n1)
+  if [ -n "$id" ]; then
+    h=$(pane_height "$id") || return 0
+    ((h <= TOOLBAR_ROWS + 1)) && return 0
+    close_pane "$id"
+    refresh
+  fi
+  put_toolbar "$1" "$2"
+}
+
 # One panel into an existing layout (toggle, or a panel that starts applying later).
 place() { # panel tab cwd
   local panel=$1 tab=$2 cwd=$3 target other new ph col p
   case $panel in
+    toolbar)
+      put_toolbar "$tab" "$cwd"
+      return 0
+      ;;
     worktrees)
       # The board spans the full height right of the middle column. Cutting it from a column
       # pane would make it half height, so the column is rebuilt in one placeholder with it.
@@ -235,7 +296,11 @@ ensure() {
     # One panel failing to apply (herdr busy) must not keep the others from opening.
     applies "$p" "$ws" "$tab" "$cwd" && want="$want $p"
   done
-  [ -n "$want" ] && place_all "$tab" "${cwd:-$HOME}" $want
+  if [ -n "$want" ]; then
+    drop_toolbar "$tab"
+    place_all "$tab" "${cwd:-$HOME}" $want
+  fi
+  settle_toolbar "$tab" "${cwd:-$HOME}"
   fit "$tab"
 }
 
@@ -268,7 +333,7 @@ close_in_tab() { # tab panel
 fit() { # tab
   local wants anchor step pane dir amount
   # Most focus events land in tabs with nothing to fit: skip the layout call there.
-  wants=$(for p in worktrees changes agents; do
+  wants=$(for p in worktrees changes agents toolbar; do
     for id in $(in_tab "$1" "$(label_of "$p")"); do echo "$id $(width_of "$p")"; done
   done | jq -Rn '[inputs | split(" ") | {(.[0]): (.[1] | tonumber)}] | add // {}')
   [ "$wants" != "{}" ] || return 0
@@ -303,42 +368,49 @@ fit() { # tab
 # between it and the agents; they come back right of the work pane and the agents panel
 # re-grids them.
 restart() {
-  local tab ws cwd p present agents park id work first
+  local tab ws cwd
   for tab in $(jq -r "[.result.panes[] | select($(is_side) and (.label | startswith(\"◇ \") | not)) | .tab_id] | unique[]" <<<"$PANES"); do
-    present=""
-    for p in worktrees changes agents; do
-      [ -n "$(in_tab "$tab" "$(label_of "$p")")" ] && present="$present $p"
-    done
     ws=$(jq -r --arg t "$tab" '[.result.panes[] | select(.tab_id == $t)][0].workspace_id' <<<"$PANES")
     cwd=$(tab_cwd "$tab" "$ws")
-    agents=$(jq -r --arg t "$tab" '.result.panes[] | select(.tab_id == $t and ((.label // "") | startswith("◇ "))) | .pane_id' <<<"$PANES")
-    park=""
+    restart_tab "$tab" "${cwd:-$HOME}"
+  done
+}
+
+restart_tab() { # tab cwd
+  local tab=$1 cwd=$2 p present agents park id work first
+  present=""
+  for p in worktrees changes agents; do
+    [ -n "$(in_tab "$tab" "$(label_of "$p")")" ] && present="$present $p"
+  done
+  agents=$(jq -r --arg t "$tab" '.result.panes[] | select(.tab_id == $t and ((.label // "") | startswith("◇ "))) | .pane_id' <<<"$PANES")
+  park=""
+  for id in $agents; do
+    if [ -z "$park" ]; then
+      park=$("$H" pane move "$id" --new-tab --label sidekick-park --no-focus | jq -r '.result.move_result.pane.tab_id // empty')
+    else
+      "$H" pane move "$id" --tab "$park" --split down --no-focus >/dev/null
+    fi
+  done
+  refresh
+  close_in_tab "$tab" toolbar
+  for p in $present; do close_in_tab "$tab" "$p"; done
+  refresh
+  place_all "$tab" "$cwd" $present
+  refresh
+  put_toolbar "$tab" "$cwd"
+  fit "$tab" || true
+  if [ -n "$park" ]; then
+    work=$(work_pane "$tab") first=""
     for id in $agents; do
-      if [ -z "$park" ]; then
-        park=$("$H" pane move "$id" --new-tab --label sidekick-park --no-focus | jq -r '.result.move_result.pane.tab_id // empty')
+      if [ -z "$first" ]; then
+        "$H" pane move "$id" --tab "$tab" --target-pane "$work" --split right --ratio 0.5 --no-focus >/dev/null
+        first=$id
       else
-        "$H" pane move "$id" --tab "$park" --split down --no-focus >/dev/null
+        "$H" pane move "$id" --tab "$tab" --target-pane "$first" --split down --no-focus >/dev/null
       fi
     done
     refresh
-    for p in $present; do close_in_tab "$tab" "$p"; done
-    refresh
-    place_all "$tab" "${cwd:-$HOME}" $present
-    refresh
-    fit "$tab" || true
-    if [ -n "$park" ]; then
-      work=$(work_pane "$tab") first=""
-      for id in $agents; do
-        if [ -z "$first" ]; then
-          "$H" pane move "$id" --tab "$tab" --target-pane "$work" --split right --ratio 0.5 --no-focus >/dev/null
-          first=$id
-        else
-          "$H" pane move "$id" --tab "$tab" --target-pane "$first" --split down --no-focus >/dev/null
-        fi
-      done
-      refresh
-    fi
-  done
+  fi
 }
 
 # `off` and toggling off: the panel in every tab, not just this one.
@@ -390,8 +462,10 @@ case $cmd in
   ensure) ensure || true ;;
   restart) restart ;;
   toggle | off)
-    label_of "$panel" >/dev/null || { echo "usage: sidekick.sh $cmd worktrees|changes|agents" >&2; exit 2; }
-    read -r _ tab < <(active) || true
+    label_of "$panel" >/dev/null || { echo "usage: sidekick.sh $cmd worktrees|changes|agents|toolbar" >&2; exit 2; }
+    read -r ws tab < <(active) || true
+    cwd=$(tab_cwd "${tab:-}" "${ws:-}")
+    [ "$panel" = toolbar ] || drop_toolbar "${tab:-}"
     if [ "$cmd" = off ] || [ -n "$(in_tab "${tab:-}" "$(label_of "$panel")")" ]; then
       touch "$(off_flag "$panel")"
       close_all "$panel"
@@ -400,7 +474,10 @@ case $cmd in
       force_open "$panel"
     fi
     refresh
-    [ -n "${tab:-}" ] && { fit "$tab" || true; }
+    if [ -n "${tab:-}" ]; then
+      settle_toolbar "$tab" "${cwd:-$HOME}"
+      fit "$tab" || true
+    fi
     ;;
   *) echo "usage: sidekick.sh ensure | toggle <panel> | off <panel> | restart | open [PATH[:LINE]]" >&2; exit 2 ;;
 esac
