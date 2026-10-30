@@ -23,7 +23,7 @@ placement = "split"
 # Pane cwd is the repo being watched, not the plugin root.
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" changes"]
 
-# One row of toggle chips across the bottom of the tab, a pane of its own.
+# Toggle chips for the panels, a pane of its own under the rightmost panel.
 [[panes]]
 id = "toolbar"
 title = "Toolbar"

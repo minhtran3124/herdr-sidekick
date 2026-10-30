@@ -26,7 +26,7 @@ H=${HERDR_BIN_PATH:-herdr}
 PLUGIN=${HERDR_PLUGIN_ID:-minhtran3124.sidekick}
 STATE=${HERDR_PLUGIN_STATE_DIR:?run from herdr}
 CLAUDE_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
-# Pane labels: must match the LABEL consts in src/{worktrees,changes,agents}/mod.rs, and "◇ "
+# Pane labels: must match the LABEL consts in src/{worktrees,changes,agents}/mod.rs and src/toolbar.rs, and "◇ "
 # below must match agents::data::PANE_PREFIX (agent transcript panes).
 BOARD="⎇ worktrees" CHANGES="± changes" AGENTS="◈ agents" TOOLBAR="▤ sidekick"
 MIN=${WORKTREES_MIN:-2}
@@ -147,7 +147,12 @@ put_toolbar() { # tab cwd
     target=$(in_tab "$1" "$(label_of "$p")" | head -n1)
     [ -n "$target" ] && break
   done
-  [ -n "$target" ] || target=$(work_pane "$1")
+  if [ -z "$target" ]; then
+    # No panel open: a bar under the work pane only when panels were hidden by hand, so a chip
+    # can bring them back. A tab where nothing applies keeps all its rows.
+    compgen -G "$STATE/disabled-*" >/dev/null || return 0
+    target=$(work_pane "$1")
+  fi
   [ -n "$target" ] || return 0
   h=$(pane_height "$target") || return 0
   ((h > TOOLBAR_ROWS + 6)) || return 0

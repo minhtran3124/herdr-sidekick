@@ -32,8 +32,8 @@ impl Screen for Bar {
         if used.height == 1 && used.right() + hint_w < area.width {
             let x = area.width - hint_w;
             buf.set_line(x, used.y, &Line::from(HINT.dark_gray()), hint_w);
-        } else if used.bottom() + 1 < area.height {
-            // Narrow and stacked: the hint goes under the chips.
+        } else if used.bottom() < area.height {
+            // A narrow column: the hint goes under the chips.
             let short = tui::truncate(" click to toggle · q hide", area.width as usize);
             buf.set_line(0, used.bottom() + 1, &Line::from(short.dark_gray()), area.width);
         }

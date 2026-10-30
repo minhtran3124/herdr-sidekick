@@ -268,7 +268,9 @@ pub struct Toolbar {
 
 impl Toolbar {
     fn style(name: &str) -> Style {
-        let on = !state_file(&format!("disabled-{name}")).is_some_and(|f| f.exists());
+        let tab = std::env::var("HERDR_TAB_ID").unwrap_or_default();
+        let off = |flag: String| state_file(&flag).is_some_and(|f| f.exists());
+        let on = !off(format!("disabled-{name}")) && !off(format!("closed-{name}-{tab}"));
         if on {
             Style::new().fg(Color::Black).bg(Color::Cyan).bold()
         } else {
@@ -304,22 +306,22 @@ impl Toolbar {
 
     /// True when the click landed on a chip (the toggle is then running).
     pub fn click(&self, col: u16, row: u16) -> bool {
-        let Some((_, name)) = self.hits.iter().find(|(r, _)| r.contains(Position::new(col, row))) else { return false };
+        let Some(name) = self.hit(col, row) else { return false };
         toggle(name);
         true
     }
+
+    fn hit(&self, col: u16, row: u16) -> Option<&'static str> {
+        self.hits.iter().find(|(r, _)| r.contains(Position::new(col, row))).map(|(_, n)| *n)
+    }
 }
 
-/// Runs `sidekick.sh toggle <panel>` in its own process group: hiding the panel that sent the
-/// click closes this pane, which must not take the script down before it finishes.
+/// Asks herdr to run the panel's toggle action. herdr runs it, not this pane: the script closes
+/// and reopens the toolbar, which must not take the script down with it.
 fn toggle(panel: &str) {
-    use std::os::unix::process::CommandExt;
-    let Some(root) = std::env::var_os("HERDR_PLUGIN_ROOT") else { return };
-    let script = PathBuf::from(root).join("sidekick.sh");
-    let child = Command::new("bash")
-        .arg(script)
-        .args(["toggle", panel])
-        .process_group(0)
+    let Ok(bin) = std::env::var("HERDR_BIN_PATH") else { return };
+    let child = Command::new(bin)
+        .args(["plugin", "action", "invoke", &format!("toggle-{panel}"), "--plugin", &plugin_id()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -351,8 +353,8 @@ mod tests {
     fn clicks_land_only_on_chips() {
         let bar = bar(30, 5);
         let r = bar.hits[1].0;
-        assert!(bar.click(r.x, r.y));
-        assert!(!bar.click(r.x, 4), "below the chips is not a chip");
-        assert!(!bar.click(0, r.y), "the margin left of a chip is not a chip");
+        assert_eq!(bar.hit(r.x, r.y), Some("changes"));
+        assert_eq!(bar.hit(r.x, 4), None, "below the chips is not a chip");
+        assert_eq!(bar.hit(0, r.y), None, "the margin left of a chip is not a chip");
     }
 }
