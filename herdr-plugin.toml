@@ -23,6 +23,13 @@ placement = "split"
 # Pane cwd is the repo being watched, not the plugin root.
 command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" changes"]
 
+# One row of toggle chips across the bottom of the tab, a pane of its own.
+[[panes]]
+id = "toolbar"
+title = "Toolbar"
+placement = "split"
+command = ["sh", "-c", "exec sh \"$HERDR_PLUGIN_ROOT/scripts/run.sh\" toolbar"]
+
 # Opened by the changes list on click; the file comes in through CHANGES_FILE.
 [[panes]]
 id = "diff"
@@ -91,6 +98,13 @@ title = "Sidekick: toggle agents"
 description = "Hide the subagents panel everywhere, or show it in the active tab and re-enable auto-open."
 contexts = ["workspace", "pane"]
 command = ["bash", "sidekick.sh", "toggle", "agents"]
+
+[[actions]]
+id = "toggle-toolbar"
+title = "Sidekick: toggle toolbar"
+description = "Hide the toggle-chip bar everywhere, or show it in the active tab and re-enable auto-open."
+contexts = ["workspace", "pane"]
+command = ["bash", "sidekick.sh", "toggle", "toolbar"]
 
 [[actions]]
 id = "restart-panels"

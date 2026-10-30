@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- A toolbar pane of its own sits under the rightmost panel (the worktree board, else agents, else
+  changes) with one icon chip per panel (⎇ ± ◈), lit while the panel is not
+  hidden. Clicking a chip runs the same toggle as the **Sidekick: toggle …** actions. Hiding a panel
+  never closes the toolbar: it moves to the next panel's column. `q` closes it in that tab, `Q` hides
+  it everywhere, **Sidekick: toggle toolbar** brings it back. herdr keeps a pane at least 7 rows
+  tall, so the bar takes that much of its column.
+
 ## 0.2.7
 
 - Notifications no longer poll. The panel that runs the all-workspace scan subscribes to herdr's

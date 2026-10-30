@@ -140,6 +140,12 @@ The selected card also has click buttons: open, start Claude, PR, hide, delete.
 **Sidekick: toggle worktrees / changes / agents**. Toggling a panel that is open hides it
 everywhere, like `Q`.
 
+A toolbar pane sits under the rightmost panel with one icon chip per panel (**⎇ ± ◈**), lit while the panel is on. Click a chip to toggle that panel, the same
+as the action. It is a pane of its own, so hiding a panel never closes it: it moves to the next
+panel's column. `q` closes it in this tab, `Q` hides it everywhere, and **Sidekick: toggle toolbar**
+brings it back. herdr will not make a pane shorter than 7 rows, so the bar takes that much of its
+column.
+
 Deleting a worktree (`d` or the card's delete button) asks first:
 
 | Worktree | Choices |
