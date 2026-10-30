@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.8
 
 - A toolbar pane of its own sits under the rightmost panel (the worktree board, else agents, else
   changes) with one icon chip per panel (⎇ ± ◈), lit while the panel is not
